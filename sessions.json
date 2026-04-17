@@ -1,0 +1,24 @@
+{
+  "sessions": [
+    {
+      "id": "7277108094:7277108094",
+      "data": {
+        "__scenes": {
+          "current": "CAFE_CREATION_WIZARD",
+          "state": {},
+          "cursor": 1
+        },
+        "cart": [],
+        "orderDraft": null,
+        "isOwner": false,
+        "isCourier": false,
+        "isSuperAdmin": true,
+        "step": "owner_login",
+        "newCafe": {},
+        "editingCafeId": 1,
+        "oldBalance": 100000,
+        "newBalance": 200000
+      }
+    }
+  ]
+}
