@@ -1,4 +1,4 @@
-﻿require("dotenv").config();
+require("dotenv").config();
 const { Telegraf, Markup } = require("telegraf");
 const db = require("./db");
 
@@ -39,7 +39,6 @@ function debugOrder(event, payload = {}) {
     t: new Date().toISOString(),
     event,
   };
-  console.log("🧾 ORDER_FLOW_DEBUG", shorten(safeJson({ ...base, ...payload }), 2500));
 }
 
 function getCtxMsgInfo(ctx) {
@@ -538,6 +537,7 @@ function superMenu() {
     ["❄️ Muzlatish", "✅ Ochish"],
     ["➕ 30 kun qo‘shish", "📊 Umumiy statistika"],
     ["✏️ Tahrirlash"],
+    ["🛵 Kuryer qo‘shish", "🛵 Kuryerlar", "❌ Kuryer o‘chirish"],
     ["🏠 Menu"],
   ]).resize();
 }
@@ -554,7 +554,7 @@ function cafePanelMenu() {
   return Markup.keyboard([
     ["➕ Mahsulot qo‘shish", "📦 Mahsulotlar"],
     ["🗑 Mahsulot o‘chirish", "🔄 Mahsulot ON/OFF"],
-    ["🪑 Stol soni"],
+    ["🚚 Yetkazib berish narxi", "🪑 Stol soni"],
     ["🛵 Kuryer qo‘shish", "🛵 Kuryerlar", "❌ Kuryer o‘chirish"],
     ["📊 Statistika", "⏰ Ish vaqtini o'zgartirish"],
     ["📅 Aboniment", "✅ Ochildik"],
@@ -569,7 +569,7 @@ function generateCafePanelMenu(cafe) {
   const rows = [
     ["➕ Mahsulot qo'shish", "📦 Mahsulotlar"],
     ["🗑 Mahsulot o'chirish", "🔄 Mahsulot ON/OFF"],
-    ["🪑 Stol soni"],
+    ["🚚 Yetkazib berish narxi", "🪑 Stol soni"],
     ["🛵 Kuryer qo'shish", "🛵 Kuryerlar", "❌ Kuryer o'chirish"],
     ["📊 Statistika", "⏰ Ish vaqtini o'zgartirish"],
   ];
@@ -798,7 +798,7 @@ function showProducts(ctx, cafeId, category, subcategory) {
       }
 
       rows.forEach((p, index) => {
-        let priceText = `💰 ${p.price} so'm`;
+        let priceText = `💰 ${p.price || 0} so'm`;
         let inlineButtons = [];
 
         let variants = [];
@@ -807,10 +807,15 @@ function showProducts(ctx, cafeId, category, subcategory) {
         } catch (e) { }
 
         if (variants && variants.length > 0) {
-          priceText = "💰 Variantlar mavjud";
+          const enabledVariants = variants.map((v, i) => ({ ...v, _origIndex: i })).filter(v => v.enabled !== false);
+          if (enabledVariants.length === 0) return; // all variants disabled — skip product
+          const prices = enabledVariants.map(v => Number(v.price || 0));
+          const minP = Math.min(...prices);
+          const maxP = Math.max(...prices);
+          priceText = minP === maxP ? `💰 ${minP} so'm` : `💰 ${minP} - ${maxP} so'm`;
           const varRows = [];
-          variants.forEach((v, vIndex) => {
-            varRows.push([Markup.button.callback(`${v.name} (${v.price} so'm)`, `addv_${p.id}_${vIndex}`)]);
+          enabledVariants.forEach((v) => {
+            varRows.push([Markup.button.callback(`${v.name} (${v.price} so'm)`, `addv_${p.id}_${v._origIndex}`)]);
           });
           inlineButtons = Markup.inlineKeyboard(varRows);
         } else {
@@ -1223,6 +1228,7 @@ bot.command("courier", (ctx) => {
 });
 
 bot.on("contact", (ctx) => {
+  if (ctx.chat?.type !== "private") return;
   const u = getUser(ctx.from.id);
   const phone = ctx.message.contact.phone_number;
 
@@ -1262,6 +1268,7 @@ bot.on("contact", (ctx) => {
 });
 
 bot.on("location", (ctx) => {
+  if (ctx.chat?.type !== "private") return;
   const u = getUser(ctx.from.id);
 
   if (u.step === "location") {
@@ -1280,8 +1287,20 @@ bot.on("location", (ctx) => {
 });
 
 bot.on("photo", (ctx) => {
+  if (ctx.chat?.type !== "private") return;
   const u = getUser(ctx.from.id);
   const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+
+  if (u.step === "edit_value_image") {
+    const id = u.temp.editCafeId;
+    db.run(`UPDATE cafes SET image_file_id = ? WHERE id = ?`, [fileId, id], (err) => {
+      if (err) return ctx.reply("Xatolik ❌");
+      u.step = "super";
+      u.temp = {};
+      ctx.reply("✅ Rasm yangilandi", superMenu());
+    });
+    return;
+  }
 
   if (u.step === "payment_photo") {
     u.orderDraft.payment_photo_id = fileId;
@@ -1329,8 +1348,8 @@ bot.on("photo", (ctx) => {
       // (handled by computing paidUntil above based on tariff_type)
       (err) => {
         if (err) {
-          console.log(err);
-          return ctx.reply("Cafe qo‘shishda xatolik ❌");
+          console.error("Cafe qo'shishda xatolik:", err);
+          return ctx.reply("Cafe qo'shishda xatolik ❌");
         }
 
         u.step = "super";
@@ -1357,8 +1376,8 @@ bot.on("photo", (ctx) => {
       ],
       (err) => {
         if (err) {
-          console.log(err);
-          return ctx.reply("Mahsulot qo‘shishda xatolik ❌");
+          console.error("Mahsulot qo'shishda xatolik:", err);
+          return ctx.reply("Mahsulot qo'shishda xatolik ❌");
         }
 
         u.step = "cafe";
@@ -1385,6 +1404,7 @@ bot.action(/accept_(\d+)/, async (ctx) => {
 
   updateOrderStatus(orderId, "accepted", {}, async (err) => {
     if (err) {
+      console.error("Zakaz qabul qilishda xatolik:", err);
       await safeAnswerCbQuery(ctx, 'Xatolik');
       return;
     }
@@ -1422,8 +1442,7 @@ bot.action(/accept_(\d+)/, async (ctx) => {
       if (!err2 && order) {
         chargeCommission(orderId, order, (commission, newBalance) => {
           if (commission > 0) {
-            console.log(`[✅ COMMISSION] Zakaz #${orderId}: ${commission} so'm - Yangi balans: ${newBalance} so'm`);
-          }
+            }
         });
       }
     });
@@ -1441,6 +1460,7 @@ bot.action(/eta_(\d+)_(\d+)/, async (ctx) => {
     { eta_minutes: minutes },
     async (err) => {
       if (err) {
+        console.error("ETA qo'shishda xatolik:", err);
         await safeAnswerCbQuery(ctx);
         return;
       }
@@ -1479,6 +1499,7 @@ bot.action(/ready_(\d+)/, async (ctx) => {
 
   updateOrderStatus(orderId, "ready", {}, async (err) => {
     if (err) {
+      console.error("Tayyor statusda xatolik:", err);
       await safeAnswerCbQuery(ctx);
       return;
     }
@@ -1529,7 +1550,7 @@ bot.action(/courier_pick_(\d+)/, async (ctx) => {
     if (err || !order) return safeAnswerCbQuery(ctx);
 
     db.all(
-      `SELECT * FROM couriers WHERE cafe_id = ? AND is_online = 1`,
+      `SELECT * FROM couriers WHERE (cafe_id = ? OR cafe_id IS NULL OR cafe_id = 0) AND is_online = 1`,
       [order.cafe_id],
       async (err2, couriers) => {
         if (err2 || !couriers.length) {
@@ -1572,6 +1593,7 @@ bot.action(/assignCourier_(\d+)_(\d+)/, async (ctx) => {
     { courier_id: courierId },
     async (err) => {
       if (err) {
+        console.error("Kuryer tayinlashda xatolik:", err);
         await safeAnswerCbQuery(ctx);
         return;
       }
@@ -1585,7 +1607,14 @@ bot.action(/assignCourier_(\d+)_(\d+)/, async (ctx) => {
           async (err3, courier) => {
             if (err3 || !courier) return;
 
-            let clientText =
+            // Get cafe name
+            db.get(
+              `SELECT name FROM cafes WHERE id = ?`,
+              [order.cafe_id],
+              async (err4, cafe) => {
+                if (err4 || !cafe) return;
+
+                let clientText =
               `🛵 Sizning buyurtmangiz kuryerga berildi.
 
 ` +
@@ -1605,16 +1634,18 @@ bot.action(/assignCourier_(\d+)_(\d+)/, async (ctx) => {
               `💵 Jami to‘lov: ${Number(order.total || 0)} so'm
 `;
 
-            if (courier.telegram) {
-              clientText += `💬 Telegram: ${courier.telegram}
+                if (courier.telegram) {
+                  clientText += `💬 Telegram: ${courier.telegram}
 `;
-            }
+                }
 
-            if (courier.telegram_id) {
+                if (courier.telegram_id) {
               // Build full receipt for courier (similar to group receipt)
               const itemsText = orderItemsText(order.items_json);
               let courierReceipt =
                 `🆕 Yangi zakaz #${orderId}
+` +
+                `🏪 Cafe: ${cafe.name}
 
 ${itemsText}
 
@@ -1677,8 +1708,6 @@ ${itemsText}
               );
               // Don't track courier's button message - we want to keep it but remove its keyboard later
               // if (cm3) trackTempMessage(orderId, courier.telegram_id, cm3.message_id);
-            } else {
-              console.log("❌ courier telegram_id yo‘q");
             }
 
             const clm = await safeSendMessage(order.user_id, clientText);
@@ -1713,12 +1742,11 @@ ${itemsText}
               `🛵 Zakaz #${orderId} kuryerga berildi: ${courier.name}`,
             );
             if (grm) trackTempMessage(orderId, ctx.chat.id, grm.message_id);
-          },
-        );
+          });
+        });
       });
-    },
-  );
-});
+    });
+  });
 
 bot.action(/courier_started_(\d+)/, async (ctx) => {
   if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
@@ -1953,6 +1981,7 @@ bot.action(/addv_(\d+)_(\d+)/, async (ctx) => {
 
     const variant = variants[variantIndex];
     if (!variant) return safeAnswerCbQuery(ctx, '❌ Variant topilmadi');
+    if (variant.enabled === false) return safeAnswerCbQuery(ctx, '❌ Bu variant hozir mavjud emas');
 
     u.cart.push({
       id: product.id,
@@ -1965,7 +1994,111 @@ bot.action(/addv_(\d+)_(\d+)/, async (ctx) => {
   });
 });
 
+// === Variant ON/OFF toggle (cafe panel) ===
+bot.action(/toggleVar_(\d+)_(\d+)/, async (ctx) => {
+  try {
+    if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+    const productId = Number(ctx.match[1]);
+    const variantIndex = Number(ctx.match[2]);
+    const u = getUser(ctx.from.id);
+
+    if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
+
+    db.get(`SELECT * FROM products WHERE id = ? AND cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
+      if (err || !product) return safeAnswerCbQuery(ctx, '❌ Mahsulot topilmadi');
+
+      let variants = [];
+      try {
+        variants = JSON.parse(product.variants || "[]");
+      } catch (e) { variants = []; }
+
+      if (!variants[variantIndex]) return safeAnswerCbQuery(ctx, '❌ Variant topilmadi');
+
+      // Toggle variant enabled
+      variants[variantIndex].enabled = variants[variantIndex].enabled === false ? true : false;
+      const newEnabled = variants[variantIndex].enabled;
+
+      db.run(
+        `UPDATE products SET variants = ? WHERE id = ?`,
+        [JSON.stringify(variants), productId],
+        async (err2) => {
+          if (err2) return safeAnswerCbQuery(ctx, '❌ Xatolik');
+
+          // Rebuild inline keyboard with updated status
+          const statusIcon = Number(product.available) === 1 ? "✅" : "❌";
+          let msg = `🔄 ${product.name} (ID: ${product.id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
+          const rows = [];
+          variants.forEach((v, i) => {
+            const vIcon = v.enabled !== false ? "✅" : "❌";
+            rows.push([Markup.button.callback(`${vIcon} ${v.name} (${v.price} so'm)`, `toggleVar_${product.id}_${i}`)]);
+          });
+          rows.push([Markup.button.callback(`${statusIcon} Mahsulot ON/OFF`, `toggleProdAvail_${product.id}`)]);
+
+          try {
+            await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, msg, Markup.inlineKeyboard(rows));
+          } catch (e) { }
+
+          await safeAnswerCbQuery(ctx, newEnabled ? '✅ Variant yoqildi' : '❌ Variant o\'chirildi');
+        },
+      );
+    });
+  } catch (e) {
+    console.log('toggleVar error:', e.message);
+    await safeAnswerCbQuery(ctx, '❌ Xatolik');
+  }
+});
+
+// === Product available ON/OFF toggle for variant products (cafe panel) ===
+bot.action(/toggleProdAvail_(\d+)/, async (ctx) => {
+  try {
+    if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+    const productId = Number(ctx.match[1]);
+    const u = getUser(ctx.from.id);
+
+    if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
+
+    db.get(`SELECT * FROM products WHERE id = ? AND cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
+      if (err || !product) return safeAnswerCbQuery(ctx, '❌ Mahsulot topilmadi');
+
+      const newStatus = Number(product.available) === 1 ? 0 : 1;
+
+      db.run(
+        `UPDATE products SET available = ? WHERE id = ?`,
+        [newStatus, productId],
+        async (err2) => {
+          if (err2) return safeAnswerCbQuery(ctx, '❌ Xatolik');
+
+          // Rebuild inline keyboard with updated product status
+          let variants = [];
+          try {
+            variants = JSON.parse(product.variants || "[]");
+          } catch (e) { variants = []; }
+
+          const statusIcon = newStatus === 1 ? "✅" : "❌";
+          let msg = `🔄 ${product.name} (ID: ${product.id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
+          const rows = [];
+          variants.forEach((v, i) => {
+            const vIcon = v.enabled !== false ? "✅" : "❌";
+            rows.push([Markup.button.callback(`${vIcon} ${v.name} (${v.price} so'm)`, `toggleVar_${product.id}_${i}`)]);
+          });
+          rows.push([Markup.button.callback(`${statusIcon} Mahsulot ON/OFF`, `toggleProdAvail_${product.id}`)]);
+
+          try {
+            await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, msg, Markup.inlineKeyboard(rows));
+          } catch (e) { }
+
+          await safeAnswerCbQuery(ctx, newStatus === 1 ? '✅ Mahsulot yoqildi' : '❌ Mahsulot o\'chirildi');
+        },
+      );
+    });
+  } catch (e) {
+    console.log('toggleProdAvail error:', e.message);
+    await safeAnswerCbQuery(ctx, '❌ Xatolik');
+  }
+});
+
 bot.on("text", (ctx) => {
+  if (ctx.chat?.type !== "private") return;
   const text = ctx.message.text;
   const u = getUser(ctx.from.id);
 
@@ -2179,6 +2312,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
   }
 
   if (text === "❌ Kuryer o‘chirish" || text === "❌ Kuryer o'chirish") {
+    u.temp.isDeletingGlobal = (u.step === "super");
     u.step = "delete_courier";
     return ctx.reply("Kuryer ID yozing:", simpleBackMenu());
   }
@@ -2188,14 +2322,23 @@ Ishlab topildi: ${stats.totalSum} so'm`;
 
     if (!id) return ctx.reply("ID noto‘g‘ri ❌");
 
+    const isSuperPanel = u.temp.isDeletingGlobal;
     db.run(
-      `DELETE FROM couriers WHERE id = ? AND cafe_id = ?`,
-      [id, u.cafeAdminId],
+      isSuperPanel ? `DELETE FROM couriers WHERE id = ?` : `DELETE FROM couriers WHERE id = ? AND cafe_id = ?`,
+      isSuperPanel ? [id] : [id, u.cafeAdminId],
       function (err) {
-        if (err) return ctx.reply("Xatolik ❌");
+        if (err) {
+          console.error("Kuryer o'chirishda xatolik:", err);
+          return ctx.reply("Xatolik ❌");
+        }
 
         if (this.changes === 0) {
           return ctx.reply("Kuryer topilmadi ❌");
+        }
+
+        if (isSuperPanel) {
+          u.step = "super";
+          return ctx.reply("🗑 Kuryer o‘chirildi ✅", superMenu());
         }
 
         u.step = "cafe";
@@ -2205,6 +2348,45 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       },
     );
 
+    return;
+  }
+
+  // 🚚 Yetkazib berish narxi — change delivery price
+  if (text === "🚚 Yetkazib berish narxi") {
+    try {
+      db.get(`SELECT delivery_price FROM cafes WHERE id = ?`, [u.cafeAdminId], (err, cafe) => {
+        if (err || !cafe) return ctx.reply("Cafe topilmadi ❌");
+        u.step = "change_delivery_price";
+        ctx.reply(`🚚 Hozirgi yetkazib berish narxi: ${Number(cafe.delivery_price || 0)} so'm\n\nYangi narxni kiriting:`, simpleBackMenu());
+      });
+    } catch (e) {
+      ctx.reply("Xatolik ❌");
+    }
+    return;
+  }
+
+  if (u.step === "change_delivery_price") {
+    try {
+      const newPrice = Number(text);
+      if (!Number.isFinite(newPrice) || newPrice < 0) {
+        return ctx.reply("❌ Raqam kiriting (0 yoki undan katta):");
+      }
+
+      db.run(
+        `UPDATE cafes SET delivery_price = ? WHERE id = ?`,
+        [Math.round(newPrice), u.cafeAdminId],
+        (err) => {
+          if (err) return ctx.reply("Xatolik ❌");
+
+          u.step = "cafe";
+          getCafeMenuAsync(u.cafeAdminId, (menu) => {
+            ctx.reply(`✅ Yetkazib berish narxi yangilandi: ${Math.round(newPrice)} so'm`, menu);
+          });
+        },
+      );
+    } catch (e) {
+      ctx.reply("Xatolik ❌");
+    }
     return;
   }
 
@@ -2258,27 +2440,49 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       `SELECT * FROM products WHERE id = ? AND cafe_id = ?`,
       [id, u.cafeAdminId],
       (err, product) => {
-        if (!product) {
+        if (err || !product) {
           return ctx.reply("Mahsulot topilmadi ❌");
         }
 
-        const newStatus = product.available === 1 ? 0 : 1;
+        let variants = [];
+        try {
+          variants = JSON.parse(product.variants || "[]");
+        } catch (e) { variants = []; }
 
-        db.run(
-          `UPDATE products SET available = ? WHERE id = ?`,
-          [newStatus, id],
-          (err2) => {
-            if (err2) return ctx.reply("Xatolik ❌");
+        if (variants && variants.length > 0) {
+          // Product has variants — show inline buttons for each variant + product on/off
+          u.step = "cafe";
+          const statusIcon = Number(product.available) === 1 ? "✅" : "❌";
+          let msg = `🔄 ${product.name} (ID: ${product.id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
 
-            const textStatus =
-              newStatus === 1 ? "✅ Sotuvga qo‘yildi" : "❌ Yopildi";
-
-            u.step = "cafe";
-            getCafeMenuAsync(u.cafeAdminId, (menu) => {
-            ctx.reply(textStatus, menu);
+          const rows = [];
+          variants.forEach((v, i) => {
+            const vIcon = v.enabled !== false ? "✅" : "❌";
+            rows.push([Markup.button.callback(`${vIcon} ${v.name} (${v.price} so'm)`, `toggleVar_${product.id}_${i}`)]);
           });
-          },
-        );
+          rows.push([Markup.button.callback(`${statusIcon} Mahsulot ON/OFF`, `toggleProdAvail_${product.id}`)]);
+
+          ctx.reply(msg, Markup.inlineKeyboard(rows));
+        } else {
+          // No variants — toggle product available as before
+          const newStatus = product.available === 1 ? 0 : 1;
+
+          db.run(
+            `UPDATE products SET available = ? WHERE id = ?`,
+            [newStatus, id],
+            (err2) => {
+              if (err2) return ctx.reply("Xatolik ❌");
+
+              const textStatus =
+                newStatus === 1 ? "✅ Sotuvga qo'yildi" : "❌ Yopildi";
+
+              u.step = "cafe";
+              getCafeMenuAsync(u.cafeAdminId, (menu) => {
+                ctx.reply(textStatus, menu);
+              });
+            },
+          );
+        }
       },
     );
 
@@ -2297,7 +2501,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       [id, u.cafeAdminId],
       function (err) {
         if (err) {
-          console.log(err);
+          console.error("Mahsulot o'chirishda xatolik:", err);
           return ctx.reply("Xatolik ❌");
         }
 
@@ -2356,6 +2560,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       // Удалить само кафе
       db.run(`DELETE FROM cafes WHERE id = ?`, [cafeId], (err) => {
         if (err) {
+          console.error("Cafe o'chirishda xatolik:", err);
           ctx.reply("❌ Xatolik yuz berdi", superMenu());
         } else {
           ctx.reply(`✅ "${u.temp.deleteCafeName}" muvaffaqiyatli o'chirildi`, superMenu());
@@ -2383,6 +2588,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       if (!cafe) return ctx.reply("Topilmadi ❌");
 
       u.temp.editCafeId = id;
+      u.temp.editCafeName = cafe.name;
       u.temp.editCafeTariffType = cafe.tariff_type;
       u.step = "edit_field";
 
@@ -2399,6 +2605,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
           ["Aboniment sanasi"],
           ["Karta egasi", "Karta raqami"],
           ["Bank nomi", "Karta QR"],
+          ["Rasm", "🗑 O'chirish"],
           ["⬅️ Orqaga"],
         ]).resize(),
       );
@@ -2426,12 +2633,31 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       "Karta raqami": "card_number",
       "Bank nomi": "bank_name",
       "Karta QR": "card_qr_id",
+      "Rasm": "image_file_id",
+      "🗑 O'chirish": "delete"
     };
 
     if (!map[text]) return ctx.reply("Tugmadan tanlang");
 
     u.temp.editField = map[text];
     u.step = "edit_value";
+
+    if (u.temp.editField === "delete") {
+      u.temp.deleteCafeId = u.temp.editCafeId;
+      u.step = "delete_cafe_confirm";
+      return ctx.reply(
+        `⚠️ DIQQAT!\n\n"${u.temp.editCafeName}" o'chirilishini tasdiqlaysizmi?\n\nBu amalni qaytarib olish mumkin emas!`,
+        Markup.keyboard([
+          ["✅ Ha, o'chir", "❌ Yo'q, bekor qil"],
+          ["⬅️ Orqaga"],
+        ]).resize(),
+      );
+    }
+
+    if (u.temp.editField === "image_file_id") {
+      u.step = "edit_value_image";
+      return ctx.reply("Yangi rasmni yuboring:");
+    }
 
     if (u.temp.editField === "tariff_type") {
       return ctx.reply(
@@ -2605,7 +2831,6 @@ Ishlab topildi: ${stats.totalSum} so'm`;
         u.cafeAdminId = cafe.id; // 🔥 MUHIM
         u.selectedCafeId = cafe.id; // 🔥 SHUNI HAM QO‘SH
 
-        console.log("✅ LOGIN BO‘LDI, CAFE ID:", cafe.id);
 
         u.temp = {};
         u.cafeAuth = true;
@@ -2672,7 +2897,7 @@ ${formatDate(cafe.paid_until)}`;
         msg += `\n\n📊 Komissiya stavkasi: ${cafe.commission_percent}%`;
       }
       
-      // Получить информацию о списаниях
+      // Получить информацию о списаниях и последние 5 заказов
       db.get(
         `SELECT COUNT(*) as total_orders, SUM(commission_charged) as total_charged FROM orders WHERE cafe_id = ? AND commission_charged > 0`,
         [cafe.id],
@@ -2684,8 +2909,23 @@ ${formatDate(cafe.paid_until)}`;
               msg += `\n   Komissiya o'chirildi: ${stats.total_charged} so'm`;
             }
           }
-          
-          ctx.reply(msg, generateCafePanelMenu(cafe));
+
+          // Получить последние 5 заказов с комиссией
+          db.all(
+            `SELECT id, total, commission_charged, created_at FROM orders WHERE cafe_id = ? AND commission_charged > 0 ORDER BY created_at DESC LIMIT 5`,
+            [cafe.id],
+            (err3, orders) => {
+              if (!err3 && orders && orders.length > 0) {
+                msg += `\n\n📋 Oxirgi 5 ta zakaz:`;
+                orders.forEach((order, idx) => {
+                  const date = new Date(order.created_at).toLocaleDateString('uz-UZ');
+                  msg += `\n   ${idx + 1}. #${order.id} | ${order.total} so'm | Komissiya: ${order.commission_charged} so'm | ${date}`;
+                });
+              }
+
+              ctx.reply(msg, generateCafePanelMenu(cafe));
+            }
+          );
         }
       );
     });
@@ -2751,6 +2991,8 @@ ${formatDate(cafe.paid_until)}`;
         "courier_car_model",
         "courier_car_number",
         "courier_telegram",
+        "toggle_product",
+        "delete_product",
       ].includes(u.step)
     ) {
       u.step = "cafe";
@@ -2876,11 +3118,8 @@ ${formatDate(cafe.paid_until)}`;
   }
 
   if (text === "📋 Cafelar") {
-    console.log("📋 Cafelar bosildi");
 
     db.all(`SELECT * FROM cafes ORDER BY id DESC`, [], (err, rows) => {
-      console.log("ERR:", err);
-      console.log("ROWS:", rows);
 
       if (err) return ctx.reply("Xatolik bo‘ldi.");
       if (!rows || !rows.length) return ctx.reply("Cafe yo‘q.");
@@ -3278,7 +3517,7 @@ ${formatDate(cafe.paid_until)}`;
     }
 
     if (!u.temp.variants) u.temp.variants = [];
-    u.temp.variants.push({ name, price });
+    u.temp.variants.push({ name, price, enabled: true });
     return ctx.reply(`✅ Qo'shildi: ${name} - ${price} so'm.
 
 Yana variant yozing yoki 'tayyor' deng:`);
@@ -3321,15 +3560,11 @@ Yana variant yozing yoki 'tayyor' deng:`);
       return ctx.reply("Avval /cafePanel orqali qayta login qiling.");
     }
 
-    console.log("📦 Mahsulotlar bosildi");
-    console.log("CAFE ADMIN ID:", u.cafeAdminId);
 
     db.all(
       `SELECT * FROM products WHERE cafe_id = ? ORDER BY id DESC`,
       [u.cafeAdminId],
       (err, rows) => {
-        console.log("PRODUCT ERR:", err);
-        console.log("PRODUCT ROWS:", rows);
 
         if (err) return ctx.reply("Xatolik bo‘ldi.");
         if (!rows || !rows.length) {
@@ -3344,16 +3579,47 @@ Yana variant yozing yoki 'tayyor' deng:`);
         rows.forEach((p, index) => {
           const status = Number(p.available) === 1 ? "✅ Faol" : "❌ Yopiq";
 
+          let priceText = '';
+          try {
+            const variants = JSON.parse(p.variants || '[]');
+            if (variants && variants.length > 0) {
+              const enabledVariants = variants.filter(v => v.enabled !== false);
+              if (enabledVariants.length > 0) {
+                const prices = enabledVariants.map(v => Number(v.price || 0));
+                const minP = Math.min(...prices);
+                const maxP = Math.max(...prices);
+                priceText = minP === maxP ? `${minP} so'm` : `${minP} - ${maxP} so'm`;
+              } else {
+                priceText = `0 so'm (barcha variantlar o'chirilgan)`;
+              }
+            } else {
+              priceText = `${p.price || 0} so'm`;
+            }
+          } catch (e) {
+            priceText = `${p.price || 0} so'm`;
+          }
+
           msg += `🔹 ${index + 1}-tovar (ID: ${p.id})
 `;
           msg += `🍔 ${p.name || "-"}
 `;
-          msg += `💰 ${p.price || 0} so'm
+          msg += `💰 ${priceText}
 `;
           msg += `📂 ${p.category || "-"}
 `;
           msg += `📌 Holat: ${status}
-
+`;
+          try {
+            const pVariants = JSON.parse(p.variants || '[]');
+            if (pVariants && pVariants.length > 0) {
+              pVariants.forEach((v, vi) => {
+                const vStatus = v.enabled !== false ? '✅' : '❌';
+                msg += `   ${vStatus} ${v.name} — ${v.price} so'm
+`;
+              });
+            }
+          } catch (e) { }
+          msg += `
 `;
         });
 
@@ -3368,6 +3634,7 @@ Yana variant yozing yoki 'tayyor' deng:`);
   }
   // courier qo‘shish
   if (text === "🛵 Kuryer qo‘shish" || text === "🛵 Kuryer qo'shish") {
+    u.temp.isGlobalCourier = (u.step === "super");
     u.step = "courier_name";
     return ctx.reply("Kuryer ismi:", simpleBackMenu());
   }
@@ -3420,7 +3687,7 @@ Yana variant yozing yoki 'tayyor' deng:`);
     db.run(
       `INSERT INTO couriers (cafe_id, name, phone, telegram, car_model, car_number, login, password, is_online) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
       [
-        u.cafeAdminId,
+        u.temp.isGlobalCourier ? null : u.cafeAdminId,
         u.temp.courier_name,
         u.temp.courier_phone,
         u.temp.courier_telegram,
@@ -3432,18 +3699,22 @@ Yana variant yozing yoki 'tayyor' deng:`);
       (err) => {
         if (err) return ctx.reply("Kuryer qo‘shishda xatolik ❌");
 
-        u.step = "cafe";
         u.temp = {};
 
-        getCafeMenuAsync(u.cafeAdminId, (menu) => ctx.reply(
-          `Kuryer qo‘shildi ✅
+        const msgStr = `Kuryer qo‘shildi ✅
 
 Kuryer botga kirib /courier bosishi va login parolini kiritishi kerak!
 
 Login: ${courierLogin}
-Parol: ${courierPassword}`,
-          menu,
-        ));
+Parol: ${courierPassword}`;
+
+        if (u.temp.isGlobalCourier) {
+          u.step = "super";
+          return ctx.reply(msgStr, superMenu());
+        }
+
+        u.step = "cafe";
+        getCafeMenuAsync(u.cafeAdminId, (menu) => ctx.reply(msgStr, menu));
       },
     );
 
@@ -3452,12 +3723,16 @@ Parol: ${courierPassword}`,
 
   // courierlar
   if (text === "🛵 Kuryerlar") {
+    const isSuperPanel = (u.step === "super");
+    const query = isSuperPanel ? `SELECT * FROM couriers ORDER BY id DESC` : `SELECT * FROM couriers WHERE cafe_id = ? OR cafe_id IS NULL OR cafe_id = 0 ORDER BY id DESC`;
+    const params = isSuperPanel ? [] : [u.cafeAdminId];
     db.all(
-      `SELECT * FROM couriers WHERE cafe_id = ? ORDER BY id DESC`,
-      [u.cafeAdminId],
+      query,
+      params,
       (err, rows) => {
         if (err) return ctx.reply("Xatolik bo‘ldi.");
         if (!rows.length) {
+          if (isSuperPanel) return ctx.reply("Kuryer yo‘q.", superMenu());
           getCafeMenuAsync(u.cafeAdminId, (menu) => {
             ctx.reply("Kuryer yo‘q.", menu);
           });
@@ -3466,7 +3741,7 @@ Parol: ${courierPassword}`,
 
         let msg = "🛵 Kuryerlar:\n\n";
         rows.forEach((c) => {
-          msg += `${c.id}. ${c.name} ${Number(c.is_online) === 1 ? '🟢' : '🔴'}
+          msg += `${c.id}. ${c.name} (Cafe: ${c.cafe_id || 'Global'}) ${Number(c.is_online) === 1 ? '🟢' : '🔴'}
 `;
           msg += `📞 ${c.phone || "-"}
 `;
@@ -3480,6 +3755,7 @@ Parol: ${courierPassword}`,
 `;
         });
 
+        if (isSuperPanel) return ctx.reply(msg, superMenu());
         getCafeMenuAsync(u.cafeAdminId, (menu) => {
           ctx.reply(msg, menu);
         });
@@ -4106,7 +4382,7 @@ function finalizeOrder(ctx, u) {
         grandTotal, deliveryPrice, "new", u.orderDraft.payment_type || 'cash', u.orderDraft.payment_photo_id || null, u.orderDraft.payment_status || 'unpaid'
       ],
       function (err2) {
-        if (err2) { console.log(err2); return safeSendMessage(ctx.from.id, "Buyurtma saqlashda xatolik ❌"); }
+        if (err2) { console.error("Buyurtma saqlashda xatolik:", err2); return safeSendMessage(ctx.from.id, "Buyurtma saqlashda xatolik ❌"); }
 
         const orderId = this.lastID;
         db.get(`SELECT * FROM orders WHERE id = ?`, [orderId], (err3, order) => {
@@ -4119,11 +4395,16 @@ function finalizeOrder(ctx, u) {
             ? itemsList.map((p, i) => `${i + 1}. ${p.name} — ${p.price} so'm`).join('\n')
             : '';
 
-          const receiptText = `✅ Buyurtmangiz uchun rahmat!\n\n📋 Zakaz #${orderId}\n\n${itemsText}\n\n💰 Jami: ${order.total} so'm`;
+          const receiptText = `✅ Buyurtmangiz uchun rahmat!\n\n📋 Zakaz #${orderId}\n\n${itemsText}` +
+            (order.delivery_price > 0 ? `\n🚚 Yetkazib berish: ${order.delivery_price} so'm` : '') +
+            `\n\n💰 Jami: ${order.total} so'm`;
 
           if (order.payment_status === 'pending_verification') {
             sendVerificationToCafeGroup(order, cafe);
-            safeSendMessage(ctx.from.id, `⏳ To'lov tekshirilmoqda.\nTasksdiqlangandan so'ng xabar olasiz.\n\n📋 Zakaz #${orderId}\n\n${itemsText}\n\n💰 Jami: ${order.total} so'm`, mainMenu());
+            const pendingText = `⏳ To'lov tekshirilmoqda.\nTasksdiqlangandan so'ng xabar olasiz.\n\n📋 Zakaz #${orderId}\n\n${itemsText}` +
+              (order.delivery_price > 0 ? `\n🚚 Yetkazib berish: ${order.delivery_price} so'm` : '') +
+              `\n\n💰 Jami: ${order.total} so'm`;
+            safeSendMessage(ctx.from.id, pendingText, mainMenu());
           } else {
             if (cafe.order_group_id) { sendOrderToCafeGroup(order, cafe); }
             safeSendMessage(ctx.from.id, receiptText, mainMenu());
@@ -4220,7 +4501,6 @@ module.exports = { bot };
 
 bot.catch((err, ctx) => {
   console.log("❌ GLOBAL BOT ERROR:", err);
-
   if (ctx) {
     ctx.reply("⚠️ Xatolik yuz berdi, qayta urinib ko‘ring.");
   }
