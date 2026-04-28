@@ -961,7 +961,7 @@ function showProducts(ctx, cafeId, category, subcategory) {
             }
             return Markup.button.callback(`${v.name} (${vPrice} so'm)`, `addv_${p.id}_${v._origIndex}`);
           });
-          inlineButtons = Markup.inlineKeyboard(chunkButtons(flatButtons, 2));
+          inlineButtons = Markup.inlineKeyboard(chunkButtons(flatButtons, 1));
         } else {
           inlineButtons = Markup.inlineKeyboard([
             [Markup.button.callback("➕ Savatchaga qo‘shish", `add_${p.id}`)],
