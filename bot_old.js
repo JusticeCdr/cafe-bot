@@ -69,7 +69,7 @@ async function safeSendPhoto(chatId, photo, extra = {}) {
   try {
     return await bot.telegram.sendPhoto(chatId, photo, extra);
   } catch (e) {
-    console.log("❌ SEND PHOTO ERROR:", e.description || e.message);
+    console.error("❌ SEND PHOTO ERROR:", e.description || e.message);
   }
 }
 
@@ -77,7 +77,7 @@ async function safeSendMessage(chatId, text, extra = {}) {
   try {
     return await bot.telegram.sendMessage(chatId, text, extra);
   } catch (e) {
-    console.log("❌ SEND MESSAGE ERROR:", e.description || e.message);
+    console.error("❌ SEND MESSAGE ERROR:", e.description || e.message);
   }
 }
 
@@ -85,7 +85,7 @@ async function safeSendLocation(chatId, lat, lon) {
   try {
     return await bot.telegram.sendLocation(chatId, lat, lon);
   } catch (e) {
-    console.log("❌ LOCATION ERROR:", e.description || e.message);
+    console.error("❌ LOCATION ERROR:", e.description || e.message);
   }
 }
 
@@ -115,7 +115,7 @@ async function safeEditMessageText(chatId, messageId, text, extra = {}) {
       }
     }
   } catch (e) {
-    console.log("❌ EDIT MESSAGE ERROR:", e.description || e.message);
+    console.error("❌ EDIT MESSAGE ERROR:", e.description || e.message);
   }
 }
 
@@ -123,7 +123,7 @@ async function safeAnswerCbQuery(ctx, text = "", extra = {}) {
   try {
     return await ctx.answerCbQuery(text, extra);
   } catch (e) {
-    console.log("❌ ANSWER CB QUERY ERROR:", e.description || e.message);
+    console.error("❌ ANSWER CB QUERY ERROR:", e.description || e.message);
     try {
       if (e.description && e.description.includes("query is too old")) {
         await safeSendMessage(ctx.from.id, "Bu tugma eskirgan. Qaytadan urinib ko'ring.");
@@ -152,7 +152,7 @@ async function safeEditMessageReplyMarkup(chatId, messageId, keyboard) {
     if (e.description && e.description.includes("message is not modified")) {
       return; // Ignore if nothing changed
     }
-    console.log("❌ EDIT REPLY MARKUP ERROR:", e.description || e.message);
+    console.error("❌ EDIT REPLY MARKUP ERROR:", e.description || e.message);
   }
 }
 
@@ -160,7 +160,7 @@ async function safeReply(ctx, text, extra = {}) {
   try {
     return await ctx.reply(text, extra);
   } catch (e) {
-    console.log("❌ REPLY ERROR:", e.description || e.message);
+    console.error("❌ REPLY ERROR:", e.description || e.message);
   }
 }
 
@@ -171,30 +171,30 @@ async function safeEditCtxMessageText(ctx, text, extra = {}) {
     if (e.description && e.description.includes("message is not modified")) {
       return;
     }
-    console.log("❌ EDIT MESSAGE TEXT ERROR:", e.description || e.message);
+    console.error("❌ EDIT MESSAGE TEXT ERROR:", e.description || e.message);
   }
 }
 
 // === NEW: Check cafe access (is_open, frozen, paid_until) ===
 function getCafeStatus(cafe) {
   if (!cafe) return { status: 'error', message: '❌ Cafe topilmadi', canAccess: false };
-  
+
   // Check if manually frozen
   if (cafe.manual_frozen === 1) {
-    return { 
+    return {
       status: 'frozen',
       message: '❄️ Akkaunt muzlatilgan',
       canAccess: false,
       balance: cafe.balance || 0
     };
   }
-  
+
   // Check if subscription expired (only for subscription tariff, NOT for commission)
   if (cafe.tariff_type !== 'commission' && cafe.paid_until) {
     const expireDate = new Date(cafe.paid_until);
     const now = new Date();
     if (expireDate <= now) {
-      return { 
+      return {
         status: 'expired',
         message: '⛔ Aboniment tugagan',
         canAccess: false,
@@ -202,7 +202,7 @@ function getCafeStatus(cafe) {
       };
     }
   }
-  
+
   // Check if commission cafe has zero or negative balance (auto-freeze)
   if (cafe.tariff_type === 'commission' && cafe.balance <= 0) {
     return {
@@ -212,19 +212,19 @@ function getCafeStatus(cafe) {
       balance: cafe.balance || 0
     };
   }
-  
+
   // Check if open
   if (cafe.is_open !== 1) {
-    return { 
+    return {
       status: 'closed',
       message: '🔴 Cafe yopiq',
       canAccess: false,
       balance: cafe.balance || 0
     };
   }
-  
+
   // All good
-  return { 
+  return {
     status: 'active',
     message: '✅ Faol',
     canAccess: true,
@@ -237,7 +237,7 @@ function showFrozenMessage(ctx) {
 }
 
 bot.catch(async (err, ctx) => {
-  console.log(`❌ GLOBAL ERROR [${ctx.updateType}]:`, err.message);
+  console.error(`❌ GLOBAL ERROR [${ctx.updateType}]:`, err.message);
   try {
     if (ctx.updateType === 'callback_query') {
       await safeSendMessage(ctx.from.id, "Xatolik yuz berdi. Tugma eskirgan bo'lishi mumkin. Qaytadan urinib ko'ring.");
@@ -445,7 +445,7 @@ function updateCommissionPercent(cafeId, newPercent, callback) {
   if (newPercent < 0 || newPercent > 100) {
     return callback && callback(false, 'Foiz 0-100 oralig\'ida bo\'lishi kerak');
   }
-  
+
   db.run(
     `UPDATE cafes SET commission_percent = ? WHERE id = ? AND tariff_type = 'commission'`,
     [newPercent, cafeId],
@@ -472,9 +472,126 @@ function getUser(id) {
       superAuth: false,
       cafeAuth: false,
       courierAuth: false,
+      history: [],
+      lastReply: null,
     };
   }
   return users[id];
+}
+
+function deepCloneJson(obj) {
+  if (obj === undefined || obj === null) return obj;
+  try {
+    return JSON.parse(JSON.stringify(obj));
+  } catch (e) {
+    return obj;
+  }
+}
+
+function cloneLastReplySnapshot(lr) {
+  if (!lr || !Array.isArray(lr.args) || lr.args.length === 0) return null;
+  return { type: lr.type, args: lr.args.slice() };
+}
+
+function navFrameFromUser(u) {
+  return {
+    step: u.step,
+    temp: deepCloneJson(u.temp || {}),
+    selectedCafeId: u.selectedCafeId,
+    selectedCafeName: u.selectedCafeName,
+    cafeAdminId: u.cafeAdminId,
+    orderDraft: u.orderDraft != null ? deepCloneJson(u.orderDraft) : null,
+    cart: deepCloneJson(u.cart || []),
+    lastReply: cloneLastReplySnapshot(u.lastReply),
+  };
+}
+
+function historyFramesEqual(a, b) {
+  if (!a || !b) return false;
+  return (
+    a.step === b.step &&
+    a.selectedCafeId === b.selectedCafeId &&
+    a.cafeAdminId === b.cafeAdminId &&
+    JSON.stringify(a.temp || {}) === JSON.stringify(b.temp || {}) &&
+    JSON.stringify(a.orderDraft) === JSON.stringify(b.orderDraft) &&
+    JSON.stringify(a.cart || []) === JSON.stringify(b.cart || [])
+  );
+}
+
+/** Call before changing step/temp/cafe in async handlers (middleware misses those). */
+function pushNavHistory(u) {
+  if (!u.history) u.history = [];
+  const frame = navFrameFromUser(u);
+  const last = u.history[u.history.length - 1];
+  if (last && historyFramesEqual(last, frame)) return;
+  u.history.push(frame);
+  while (u.history.length > 20) u.history.shift();
+}
+
+function goBackEmpty(ctx, u) {
+  u.step = "home";
+  u.temp = {};
+  u.selectedCafeId = null;
+  u.selectedCafeName = null;
+  u.orderDraft = null;
+  u.cart = [];
+  u.history = [];
+  return ctx.reply("Menu:", mainMenu());
+}
+
+function goBackFallback(ctx, u) {
+  try {
+    if (u.superAuth && u.step === "super") return ctx.reply("Super panel", superMenu());
+    if (u.cafeAuth && u.step === "cafe" && u.cafeAdminId) {
+      return getCafeMenuAsync(u.cafeAdminId, (menu) => ctx.reply("Cafe panel", menu));
+    }
+    if (u.courierAuth && (u.step === "courier" || u.step === "courier_panel")) {
+      return ctx.reply("Kuryer menyusi", courierMenu());
+    }
+    if (u.selectedCafeId) {
+      return db.get(`SELECT * FROM cafes WHERE id = ?`, [u.selectedCafeId], (err, cafe) => {
+        if (!cafe) {
+          u.selectedCafeId = null;
+          u.selectedCafeName = null;
+          return goBackEmpty(ctx, u);
+        }
+        return ctx.reply("Cafe menyusi:", customerCafeMenu(cafe));
+      });
+    }
+  } catch (e) {
+    console.error("goBackFallback:", e.message);
+  }
+  return goBackEmpty(ctx, u);
+}
+
+function goBack(ctx, u) {
+  if (!u.history || u.history.length === 0) {
+    return goBackEmpty(ctx, u);
+  }
+
+  const prev = u.history.pop();
+
+  u.step = prev.step != null ? prev.step : "home";
+  u.temp = prev.temp != null ? deepCloneJson(prev.temp) : {};
+  u.selectedCafeId = prev.selectedCafeId;
+  u.selectedCafeName = prev.selectedCafeName != null ? prev.selectedCafeName : null;
+  u.cafeAdminId = prev.cafeAdminId;
+  u.orderDraft =
+    prev.orderDraft !== undefined ? (prev.orderDraft == null ? null : deepCloneJson(prev.orderDraft)) : null;
+  u.cart = Array.isArray(prev.cart) ? deepCloneJson(prev.cart) : [];
+
+  if (prev.lastReply && Array.isArray(prev.lastReply.args) && prev.lastReply.args.length > 0) {
+    try {
+      if (prev.lastReply.type === "photo") {
+        return ctx.replyWithPhoto(...prev.lastReply.args);
+      }
+      return ctx.reply(...prev.lastReply.args);
+    } catch (e) {
+      console.error("goBack replay:", e.message);
+    }
+  }
+
+  return goBackFallback(ctx, u);
 }
 
 function getDaysLeft(paid_until) {
@@ -494,13 +611,13 @@ function formatDate(date) {
   if (!date) return "-";
   const d = new Date(date);
   if (isNaN(d.getTime())) return "-";
-  
+
   const day = String(d.getDate()).padStart(2, "0");
   const month = String(d.getMonth() + 1).padStart(2, "0");
   const year = d.getFullYear();
   const hours = String(d.getHours()).padStart(2, "0");
   const minutes = String(d.getMinutes()).padStart(2, "0");
-  
+
   return `${day}.${month}.${year} ${hours}:${minutes}`;
 }
 
@@ -527,8 +644,19 @@ function resetOrderDraft(user) {
   user.orderDraft = null;
 }
 
+function chunkButtons(buttons, size = 2) {
+  const chunks = [];
+  for (let i = 0; i < buttons.length; i += size) {
+    chunks.push(buttons.slice(i, i + size));
+  }
+  return chunks;
+}
+
 function mainMenu() {
-  return Markup.keyboard([["🏪 Cafelar", "ℹ️ Info"]]).resize();
+  return Markup.keyboard([
+    ["☕️ Cafelar", "🍽 Restoranlar"],
+    ["ℹ️ Info"]
+  ]).resize();
 }
 
 function superMenu() {
@@ -536,7 +664,7 @@ function superMenu() {
     ["➕ Cafe qo‘shish", "📋 Cafelar"],
     ["❄️ Muzlatish", "✅ Ochish"],
     ["➕ 30 kun qo‘shish", "📊 Umumiy statistika"],
-    ["✏️ Tahrirlash"],
+    ["✏️ Tahrirlash", "📢 Reklama"],
     ["🛵 Kuryer qo‘shish", "🛵 Kuryerlar", "❌ Kuryer o‘chirish"],
     ["🏠 Menu"],
   ]).resize();
@@ -565,7 +693,7 @@ function cafePanelMenu() {
 // Генерирует меню панели кафе динамически на основе типа тарифа
 function generateCafePanelMenu(cafe) {
   if (!cafe) return cafePanelMenu();
-  
+
   const rows = [
     ["➕ Mahsulot qo'shish", "📦 Mahsulotlar"],
     ["🗑 Mahsulot o'chirish", "🔄 Mahsulot ON/OFF"],
@@ -573,17 +701,17 @@ function generateCafePanelMenu(cafe) {
     ["🛵 Kuryer qo'shish", "🛵 Kuryerlar", "❌ Kuryer o'chirish"],
     ["📊 Statistika", "⏰ Ish vaqtini o'zgartirish"],
   ];
-  
+
   // Добавляем кнопку баланса или абонемента в зависимости от типа тарифа
   if (cafe.tariff_type === 'commission') {
     rows.push(["💰 Balans"]);
   } else {
     rows.push(["📅 Aboniment"]);
   }
-  
+
   rows.push(["✅ Ochildik"]);
   rows.push(["❌ Yopildik", "🏠 Menu"]);
-  
+
   return Markup.keyboard(rows).resize();
 }
 
@@ -798,6 +926,9 @@ function showProducts(ctx, cafeId, category, subcategory) {
       }
 
       rows.forEach((p, index) => {
+        const strike = (text) => String(text).split('').map(c => c + '\u0336').join('');
+        const discount = Number(p.discount_percent || 0);
+
         let priceText = `💰 ${p.price || 0} so'm`;
         let inlineButtons = [];
 
@@ -812,12 +943,25 @@ function showProducts(ctx, cafeId, category, subcategory) {
           const prices = enabledVariants.map(v => Number(v.price || 0));
           const minP = Math.min(...prices);
           const maxP = Math.max(...prices);
-          priceText = minP === maxP ? `💰 ${minP} so'm` : `💰 ${minP} - ${maxP} so'm`;
-          const varRows = [];
-          enabledVariants.forEach((v) => {
-            varRows.push([Markup.button.callback(`${v.name} (${v.price} so'm)`, `addv_${p.id}_${v._origIndex}`)]);
+
+          if (discount > 0 && discount <= 90) {
+            const minDisc = Math.round(minP * (1 - discount / 100));
+            const maxDisc = Math.round(maxP * (1 - discount / 100));
+            priceText = minP === maxP
+              ? `🏷 Chegirma ${discount}%\n💰 ${strike(minP)} so'm 👉 ${minDisc} so'm`
+              : `🏷 Chegirma ${discount}%\n💰 ${strike(minP)} - ${strike(maxP)} so'm 👉 ${minDisc} - ${maxDisc} so'm`;
+          } else {
+            priceText = minP === maxP ? `💰 ${minP} so'm` : `💰 ${minP} - ${maxP} so'm`;
+          }
+
+          const flatButtons = enabledVariants.map((v) => {
+            let vPrice = Number(v.price || 0);
+            if (discount > 0 && discount <= 90) {
+              vPrice = Math.round(vPrice * (1 - discount / 100));
+            }
+            return Markup.button.callback(`${v.name} (${vPrice} so'm)`, `addv_${p.id}_${v._origIndex}`);
           });
-          inlineButtons = Markup.inlineKeyboard(varRows);
+          inlineButtons = Markup.inlineKeyboard(chunkButtons(flatButtons, 2));
         } else {
           inlineButtons = Markup.inlineKeyboard([
             [Markup.button.callback("➕ Savatchaga qo‘shish", `add_${p.id}`)],
@@ -888,59 +1032,56 @@ function orderItemsText(itemsJson) {
     .join("\n");
 }
 
-function sendOrderToCafeGroup(order, cafe) {
+async function sendOrderToCafeGroup(order, cafe) {
+  if (!cafe.order_group_id) return false;
+
+  let groupId = String(cafe.order_group_id).trim().replace(".0", "");
+
   const itemsText = orderItemsText(order.items_json);
 
   let message =
-    `🆕 Yangi zakaz #${order.id}
-
-` +
-    `${itemsText}
-
-` +
-    `📦 Turi: ${order.order_type}
-` +
-    `👤 Ism: ${order.customer_name}
-` +
-    `📞 Telefon: ${order.customer_phone}
-` +
-    `💬 Telegram: ${order.customer_telegram || "-"}
-`;
+    `🆕 Yangi zakaz #${order.id}\n\n` +
+    `${itemsText}\n\n` +
+    `📦 Turi: ${order.order_type}\n` +
+    `👤 Ism: ${order.customer_name}\n` +
+    `📞 Telefon: ${order.customer_phone}\n` +
+    `💬 Telegram: ${order.customer_telegram || "-"}\n`;
 
   if (order.order_type === "🚚 Yetkazib berish") {
-    message += `📍 Manzil: ${order.address || "-"}
-`;
-    message += `🚚 Delivery narxi: ${order.delivery_price} so'm
-`;
+    message += `📍 Manzil: ${order.address || "-"}\n`;
+    message += `🚚 Delivery narxi: ${order.delivery_price} so'm\n`;
   }
 
   if (order.order_type === "🍽 Shu yerda yeyish") {
-    message += `🪑 Stol: ${order.table_number || "-"}
-`;
+    message += `🪑 Stol: ${order.table_number || "-"}\n`;
   }
 
   if (order.note && String(order.note).trim() !== "") {
-    message += `📝 Izoh: ${String(order.note).trim()}
-`;
+    message += `📝 Izoh: ${String(order.note).trim()}\n`;
   }
 
-  message += `
-💰 Jami: ${order.total} so'm`;
+  message += `\n💰 Jami: ${order.total} so'm`;
 
-  safeSendMessage(
-    cafe.order_group_id,
-    message,
-    orderActionButtons(order),
-  ).then(msg => {
-    if (msg) db.run(`UPDATE orders SET group_main_msg_id = ? WHERE id = ?`, [`${cafe.order_group_id}_${msg.message_id}`, order.id]);
-  });
-
-  if (order.latitude && order.longitude) {
-    safeSendLocation(
-      cafe.order_group_id,
-      order.latitude,
-      order.longitude,
+  try {
+    const msg = await bot.telegram.sendMessage(
+      groupId,
+      message,
+      orderActionButtons(order),
     );
+
+    if (msg) db.run(`UPDATE orders SET group_main_msg_id = ? WHERE id = ?`, [`${groupId}_${msg.message_id}`, order.id]);
+
+    if (order.latitude && order.longitude) {
+      try {
+        await bot.telegram.sendLocation(groupId, order.latitude, order.longitude);
+      } catch (locErr) {
+        console.error("LOCATION ERROR:", locErr.message);
+      }
+    }
+    return true;
+  } catch (e) {
+    console.error("GROUP SEND ERROR:", e.message);
+    return false;
   }
 }
 
@@ -1110,22 +1251,22 @@ function getHourlyStats(cafeId, callback) {
     [cafeId],
     (err, orders) => {
       if (err) return callback(err);
-      
+
       const hourlyMap = {};
-      
+
       orders.forEach((order) => {
         if (!order.created_at) return;
         const date = new Date(order.created_at);
         const hour = String(date.getHours()).padStart(2, '0');
         const key = `${hour}:00`;
-        
+
         if (!hourlyMap[key]) {
           hourlyMap[key] = { count: 0, revenue: 0 };
         }
         hourlyMap[key].count += 1;
         hourlyMap[key].revenue += Number(order.total || 0);
       });
-      
+
       // Sort by hour
       const hourlyStats = Object.keys(hourlyMap)
         .sort()
@@ -1134,7 +1275,7 @@ function getHourlyStats(cafeId, callback) {
           count: hourlyMap[hour].count,
           revenue: hourlyMap[hour].revenue
         }));
-      
+
       callback(null, hourlyStats);
     }
   );
@@ -1163,7 +1304,7 @@ bot.start(async (ctx) => {
       [telegramId],
       async (err, courier) => {
         if (err) {
-          console.log("DB ERROR:", err);
+          console.error("DB ERROR:", err);
           return;
         }
 
@@ -1171,13 +1312,13 @@ bot.start(async (ctx) => {
           try {
             await ctx.reply("👋 Siz kuryersiz. Zakazlar shu yerga keladi.");
           } catch (e) {
-            console.log("Courier reply error:", e.message);
+            console.error("Courier reply error:", e.message);
           }
         } else {
           try {
             await ctx.reply("👋 Xush kelibsiz!");
           } catch (e) {
-            console.log("User reply error:", e.message);
+            console.error("User reply error:", e.message);
           }
         }
       },
@@ -1189,12 +1330,21 @@ bot.start(async (ctx) => {
         `UPDATE couriers SET telegram_id = ? WHERE telegram = ?`,
         [telegramId, `@${ctx.from.username}`],
         (err) => {
-          if (err) console.log("UPDATE ERROR:", err);
+          if (err) console.error("UPDATE ERROR:", err);
         },
       );
     }
+
+    // Foydalanuvchini saqlash (rasilka uchun)
+    db.run(
+      `INSERT OR IGNORE INTO users (telegram_id, username, first_name) VALUES (?, ?, ?)`,
+      [telegramId, ctx.from.username || null, ctx.from.first_name || null],
+      (err) => {
+        if (err) console.error("USERS INSERT ERROR:", err);
+      }
+    );
   } catch (e) {
-    console.log("START ERROR:", e.message);
+    console.error("START ERROR:", e.message);
   }
 });
 
@@ -1227,6 +1377,148 @@ bot.command("courier", (ctx) => {
   ctx.reply("Kuryer loginini kiriting:", Markup.keyboard([["⬅️ Orqaga"]]).resize());
 });
 
+// === GLOBAL INTERCEPTOR FOR HISTORY STACK AND BROADCAST ===
+bot.use(async (ctx, next) => {
+  if (ctx.chat?.type !== "private") return next();
+  const u = getUser(ctx.from.id);
+
+  if (!u.history) u.history = [];
+
+  // Hook reply methods to capture current UI state
+  const originalReply = ctx.reply;
+  const originalReplyWithPhoto = ctx.replyWithPhoto;
+
+  ctx.reply = function (...args) {
+    u.lastReply = { type: 'text', args };
+    return originalReply.apply(ctx, args);
+  };
+  ctx.replyWithPhoto = function (...args) {
+    u.lastReply = { type: 'photo', args };
+    return originalReplyWithPhoto.apply(ctx, args);
+  };
+
+  const frameBefore = navFrameFromUser(u);
+
+  const text = ctx.message?.text || "";
+  const data = ctx.callbackQuery?.data || "";
+  const isBack = text === "⬅️ Orqaga" || data === "back";
+
+  try {
+    await next();
+  } catch (err) {
+    console.error("ROUTE ERROR:", err);
+  }
+
+  const oldStep = frameBefore.step;
+
+  // Ignored transitions (don't push to history)
+  const isIgnored =
+    data.startsWith("add_") ||
+    data.startsWith("addv_") ||
+    data.startsWith("variant_") ||
+    data.startsWith("page_") ||
+    data.startsWith("admin_prod_page_") ||
+    data.startsWith("verify_") ||
+    data.startsWith("accept_") ||
+    data.startsWith("reject_") ||
+    data.startsWith("ready_") ||
+    data.startsWith("deliver_") ||
+    data.startsWith("delivered_") ||
+    data.startsWith("eta_") ||
+    data.startsWith("courier_") ||
+    data.startsWith("assignCourier_") ||
+    data.startsWith("toggle_") ||
+    data.startsWith("toggleVar_") ||
+    data.startsWith("toggleProdAvail_") ||
+    data.startsWith("delprod_") ||
+    data.startsWith("rm_") ||
+    data.startsWith("edit_prod_") ||
+    data === "cart" ||
+    u.step === "payment_photo" ||
+    (oldStep === "reklama_confirm" && u.step === "super");
+
+  const stepChanged = u.step !== frameBefore.step;
+  const cafeChanged = u.selectedCafeId !== frameBefore.selectedCafeId;
+
+  if (!isBack && !isIgnored && (stepChanged || cafeChanged)) {
+    if (!u.history) u.history = [];
+    const last = u.history[u.history.length - 1];
+    if (!last || !historyFramesEqual(last, frameBefore)) {
+      u.history.push(frameBefore);
+      while (u.history.length > 20) u.history.shift();
+    }
+  }
+
+  return;
+});
+
+// Original specific interceptors below...
+bot.use(async (ctx, next) => {
+  if (ctx.chat?.type !== "private") return next();
+  const u = getUser(ctx.from.id);
+
+  if (u.step === "payment_photo" && ctx.message) {
+    if (!ctx.message.photo && !ctx.message.document && ctx.message.text !== "⬅️ Orqaga") {
+      return ctx.reply("❌ Faqat chek rasmini yoki file yuboring.");
+    }
+  }
+
+  if (u.step === "reklama_input" && ctx.message) {
+    if (ctx.message.text === "⬅️ Orqaga") {
+      return goBack(ctx, u);
+    }
+
+    if (!ctx.message.text && !ctx.message.photo && !ctx.message.video && !ctx.message.document) {
+      return ctx.reply("❌ Faqat text, rasm, video yoki file yuboring");
+    }
+
+    u.temp.reklama_msg_id = ctx.message.message_id;
+    u.step = "reklama_confirm";
+    return ctx.reply("Yuborilsinmi?", Markup.keyboard([["Ha, yuborilsin", "Yo'q, bekor qilish"]]).resize());
+  }
+
+  if (u.step === "reklama_confirm" && ctx.message) {
+    if (ctx.message.text === "Ha, yuborilsin") {
+      u.step = "super";
+      ctx.reply("📢 Reklama yuborish boshlandi... Bu biroz vaqt olishi mumkin.", superMenu());
+
+      const msgIdToCopy = u.temp.reklama_msg_id;
+      const adminId = ctx.from.id;
+
+      db.all("SELECT telegram_id FROM users", [], async (err, users) => {
+        if (err || !users || users.length === 0) {
+          return safeSendMessage(adminId, "Foydalanuvchilar topilmadi.");
+        }
+
+        let successCount = 0;
+        let failCount = 0;
+
+        for (const user of users) {
+          if (!user.telegram_id) continue;
+          try {
+            await bot.telegram.copyMessage(user.telegram_id, adminId, msgIdToCopy);
+            successCount++;
+          } catch (error) {
+            failCount++;
+          }
+          await new Promise(resolve => setTimeout(resolve, 50)); // 50ms delay
+        }
+
+        safeSendMessage(adminId, `✅ Reklama yuborish tugadi!\n\n📤 Yuborildi: ${successCount}\n❌ Xatolik: ${failCount}`);
+      });
+      return;
+    } else if (ctx.message.text === "Yo'q, bekor qilish") {
+      u.step = "super";
+      u.temp = {};
+      return ctx.reply("Bekor qilindi", superMenu());
+    } else {
+      return ctx.reply("Tugmalardan birini tanlang.", Markup.keyboard([["Ha, yuborilsin", "Yo'q, bekor qilish"]]).resize());
+    }
+  }
+
+  return next();
+});
+
 bot.on("contact", (ctx) => {
   if (ctx.chat?.type !== "private") return;
   const u = getUser(ctx.from.id);
@@ -1246,6 +1538,8 @@ bot.on("contact", (ctx) => {
         [u.selectedCafeId],
         (err, cafe) => {
           if (!cafe) return ctx.reply("Cafe topilmadi.");
+
+          pushNavHistory(u);
 
           const count = Number(cafe.table_count || 0);
 
@@ -1286,6 +1580,17 @@ bot.on("location", (ctx) => {
   }
 });
 
+bot.on("document", (ctx) => {
+  if (ctx.chat?.type !== "private") return;
+  const u = getUser(ctx.from.id);
+
+  if (u.step === "payment_photo") {
+    const fileId = ctx.message.document.file_id;
+    u.orderDraft.payment_photo_id = "DOC:" + fileId;
+    return finalizeOrder(ctx, u);
+  }
+});
+
 bot.on("photo", (ctx) => {
   if (ctx.chat?.type !== "private") return;
   const u = getUser(ctx.from.id);
@@ -1299,6 +1604,26 @@ bot.on("photo", (ctx) => {
       u.temp = {};
       ctx.reply("✅ Rasm yangilandi", superMenu());
     });
+    return;
+  }
+
+  if (u.step === "edit_product_value" && u.temp.editField === "image_file_id") {
+    db.run(
+      `UPDATE products SET image_file_id = ? WHERE id = ?`,
+      [fileId, u.temp.productId],
+      (err) => {
+        if (err) return ctx.reply("Xatolik ❌");
+
+        u.step = "edit_product_field";
+        ctx.reply("✅ Rasm yangilandi\n\nYana nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+          ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+          ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+          ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+          ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+          ["❌ Bekor qilish"]
+        ]).resize());
+      },
+    );
     return;
   }
 
@@ -1427,12 +1752,12 @@ bot.action(/accept_(\d+)/, async (ctx) => {
       });
       await safeEditMessageReplyMarkup(ctx.chat.id, ctx.callbackQuery.message.message_id, newButtons.reply_markup);
       await safeAnswerCbQuery(ctx, '✅ Qabul qilindi');
-      
+
       // Ask for ETA
       const etaMsg = await ctx.reply(
         `⏱ Zakaz #${orderId} uchun vaqtni tanlang`,
         etaButtons(orderId),
-        
+
       );
       if (etaMsg) trackTempMessage(orderId, ctx.chat.id, etaMsg.message_id);
     });
@@ -1442,7 +1767,7 @@ bot.action(/accept_(\d+)/, async (ctx) => {
       if (!err2 && order) {
         chargeCommission(orderId, order, (commission, newBalance) => {
           if (commission > 0) {
-            }
+          }
         });
       }
     });
@@ -1615,23 +1940,23 @@ bot.action(/assignCourier_(\d+)_(\d+)/, async (ctx) => {
                 if (err4 || !cafe) return;
 
                 let clientText =
-              `🛵 Sizning buyurtmangiz kuryerga berildi.
+                  `🛵 Sizning buyurtmangiz kuryerga berildi.
 
 ` +
-              `👤 Kuryer: ${courier.name}
+                  `👤 Kuryer: ${courier.name}
 ` +
-              `📞 Telefon: ${courier.phone || "-"}
+                  `📞 Telefon: ${courier.phone || "-"}
 ` +
-              `🚗 Mashina: ${courier.car_model || "-"}
+                  `🚗 Mashina: ${courier.car_model || "-"}
 ` +
-              `🔢 Raqam: ${courier.car_number || "-"}
+                  `🔢 Raqam: ${courier.car_number || "-"}
 
 ` +
-              `💰 Mahsulotlar: ${Number(order.total || 0) - Number(order.delivery_price || 0)} so'm
+                  `💰 Mahsulotlar: ${Number(order.total || 0) - Number(order.delivery_price || 0)} so'm
 ` +
-              `🚚 Yetkazib berish: ${Number(order.delivery_price || 0)} so'm
+                  `🚚 Yetkazib berish: ${Number(order.delivery_price || 0)} so'm
 ` +
-              `💵 Jami to‘lov: ${Number(order.total || 0)} so'm
+                  `💵 Jami to‘lov: ${Number(order.total || 0)} so'm
 `;
 
                 if (courier.telegram) {
@@ -1640,12 +1965,12 @@ bot.action(/assignCourier_(\d+)_(\d+)/, async (ctx) => {
                 }
 
                 if (courier.telegram_id) {
-              // Build full receipt for courier (similar to group receipt)
-              const itemsText = orderItemsText(order.items_json);
-              let courierReceipt =
-                `🆕 Yangi zakaz #${orderId}
+                  // Build full receipt for courier (similar to group receipt)
+                  const itemsText = orderItemsText(order.items_json);
+                  let courierReceipt =
+                    `🆕 Yangi zakaz #${orderId}
 ` +
-                `🏪 Cafe: ${cafe.name}
+                    `🏪 Cafe: ${cafe.name}
 
 ${itemsText}
 
@@ -1654,99 +1979,99 @@ ${itemsText}
 📞 Telefon: ${order.customer_phone}
 `;
 
-              if (order.order_type === "🚚 Yetkazib berish") {
-                courierReceipt += `📍 Manzil: ${order.address || "-"}
+                  if (order.order_type === "🚚 Yetkazib berish") {
+                    courierReceipt += `📍 Manzil: ${order.address || "-"}
 `;
-                courierReceipt += `🚚 Delivery narxi: ${order.delivery_price} so'm
+                    courierReceipt += `🚚 Delivery narxi: ${order.delivery_price} so'm
 `;
-              }
+                  }
 
-              if (order.note && String(order.note).trim() !== "") {
-                courierReceipt += `📝 Izoh: ${String(order.note).trim()}
+                  if (order.note && String(order.note).trim() !== "") {
+                    courierReceipt += `📝 Izoh: ${String(order.note).trim()}
 `;
-              }
+                  }
 
-              courierReceipt += `💰 Jami: ${order.total} so'm`;
+                  courierReceipt += `💰 Jami: ${order.total} so'm`;
 
-              // Send full receipt to courier (not tracked - should remain after order completion)
-              const cm1 = await safeSendMessage(courier.telegram_id, courierReceipt);
-              // Don't track courier's receipt - it should stay
-              // if (cm1) trackTempMessage(orderId, courier.telegram_id, cm1.message_id);
+                  // Send full receipt to courier (not tracked - should remain after order completion)
+                  const cm1 = await safeSendMessage(courier.telegram_id, courierReceipt);
+                  // Don't track courier's receipt - it should stay
+                  // if (cm1) trackTempMessage(orderId, courier.telegram_id, cm1.message_id);
 
-              if (order.latitude && order.longitude) {
-                const cm2 = await safeSendLocation(
-                  courier.telegram_id,
-                  order.latitude,
-                  order.longitude,
-                );
-                // keep courier location message
-              }
+                  if (order.latitude && order.longitude) {
+                    const cm2 = await safeSendLocation(
+                      courier.telegram_id,
+                      order.latitude,
+                      order.longitude,
+                    );
+                    // keep courier location message
+                  }
 
-              const cm3 = await safeSendMessage(
-                courier.telegram_id,
-                "📦 Zakazni boshqarish:",
-                Markup.inlineKeyboard([
-                  [
-                    Markup.button.callback(
-                      "🛵 Oldim",
-                      `courier_started_${orderId}`,
-                    ),
-                  ],
-                  [
-                    Markup.button.callback(
-                      "📦 Yetib keldim",
-                      `courier_arrived_${orderId}`,
-                    ),
-                  ],
-                  [
-                    Markup.button.callback(
-                      "✅ Topshirildi",
-                      `courier_done_${orderId}`,
-                    ),
-                  ],
-                ]),
-              );
-              // Don't track courier's button message - we want to keep it but remove its keyboard later
-              // if (cm3) trackTempMessage(orderId, courier.telegram_id, cm3.message_id);
-            }
-
-            const clm = await safeSendMessage(order.user_id, clientText);
-            if (clm) trackTempMessage(orderId, order.user_id, clm.message_id);
-
-            // Delete "Kuryerni tanlang" message (the one user just clicked on)
-            const courierPickMsg = ctx.callbackQuery?.message;
-            if (courierPickMsg?.chat?.id && courierPickMsg?.message_id) {
-              safeDeleteMessage(courierPickMsg.chat.id, courierPickMsg.message_id);
-            }
-
-            // Clean up temp messages from earlier steps (Vaqtni tanlang, etc.)
-            // cleanUpOrderMessages preserves main receipt and tracked courier messages
-            cleanUpOrderMessages(orderId);
-
-            // Update MAIN receipt message buttons to show only "Yetkazildi"
-            const updatedOrder = { ...order, status: "courier_assigned" };
-            const newButtons = getOrderStatusButtons(updatedOrder);
-            if (order.group_main_msg_id) {
-              const parts = String(order.group_main_msg_id).split("_");
-              if (parts.length === 2) {
-                const gChatId = Number(parts[0]) || null;
-                const gMsgId = Number(parts[1]) || null;
-                if (gChatId && gMsgId) {
-                  await safeEditMessageReplyMarkup(gChatId, gMsgId, newButtons.reply_markup);
+                  const cm3 = await safeSendMessage(
+                    courier.telegram_id,
+                    "📦 Zakazni boshqarish:",
+                    Markup.inlineKeyboard([
+                      [
+                        Markup.button.callback(
+                          "🛵 Oldim",
+                          `courier_started_${orderId}`,
+                        ),
+                      ],
+                      [
+                        Markup.button.callback(
+                          "📦 Yetib keldim",
+                          `courier_arrived_${orderId}`,
+                        ),
+                      ],
+                      [
+                        Markup.button.callback(
+                          "✅ Topshirildi",
+                          `courier_done_${orderId}`,
+                        ),
+                      ],
+                    ]),
+                  );
+                  // Don't track courier's button message - we want to keep it but remove its keyboard later
+                  // if (cm3) trackTempMessage(orderId, courier.telegram_id, cm3.message_id);
                 }
-              }
-            }
 
-            await safeAnswerCbQuery(ctx);
-            const grm = await ctx.reply(
-              `🛵 Zakaz #${orderId} kuryerga berildi: ${courier.name}`,
-            );
-            if (grm) trackTempMessage(orderId, ctx.chat.id, grm.message_id);
+                const clm = await safeSendMessage(order.user_id, clientText);
+                if (clm) trackTempMessage(orderId, order.user_id, clm.message_id);
+
+                // Delete "Kuryerni tanlang" message (the one user just clicked on)
+                const courierPickMsg = ctx.callbackQuery?.message;
+                if (courierPickMsg?.chat?.id && courierPickMsg?.message_id) {
+                  safeDeleteMessage(courierPickMsg.chat.id, courierPickMsg.message_id);
+                }
+
+                // Clean up temp messages from earlier steps (Vaqtni tanlang, etc.)
+                // cleanUpOrderMessages preserves main receipt and tracked courier messages
+                cleanUpOrderMessages(orderId);
+
+                // Update MAIN receipt message buttons to show only "Yetkazildi"
+                const updatedOrder = { ...order, status: "courier_assigned" };
+                const newButtons = getOrderStatusButtons(updatedOrder);
+                if (order.group_main_msg_id) {
+                  const parts = String(order.group_main_msg_id).split("_");
+                  if (parts.length === 2) {
+                    const gChatId = Number(parts[0]) || null;
+                    const gMsgId = Number(parts[1]) || null;
+                    if (gChatId && gMsgId) {
+                      await safeEditMessageReplyMarkup(gChatId, gMsgId, newButtons.reply_markup);
+                    }
+                  }
+                }
+
+                await safeAnswerCbQuery(ctx);
+                const grm = await ctx.reply(
+                  `🛵 Zakaz #${orderId} kuryerga berildi: ${courier.name}`,
+                );
+                if (grm) trackTempMessage(orderId, ctx.chat.id, grm.message_id);
+              });
           });
-        });
       });
     });
-  });
+});
 
 bot.action(/courier_started_(\d+)/, async (ctx) => {
   if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
@@ -1953,10 +2278,19 @@ bot.action(/add_(\d+)/, async (ctx) => {
         return safeAnswerCbQuery(ctx, '❌ Mahsulot mavjud emas');
       }
 
+      const original_price = Number(product.price || 0);
+      let final_price = original_price;
+      const discount = Number(product.discount_percent || 0);
+      if (discount > 0 && discount <= 90) {
+        final_price = Math.round(original_price * (1 - discount / 100));
+      }
+
       u.cart.push({
         id: product.id,
         name: product.name,
-        price: product.price,
+        price: final_price,
+        original_price: original_price,
+        final_price: final_price
       });
 
       // FIX #3: Show ✅ toast, no extra chat message
@@ -1983,10 +2317,19 @@ bot.action(/addv_(\d+)_(\d+)/, async (ctx) => {
     if (!variant) return safeAnswerCbQuery(ctx, '❌ Variant topilmadi');
     if (variant.enabled === false) return safeAnswerCbQuery(ctx, '❌ Bu variant hozir mavjud emas');
 
+    const original_price = Number(variant.price || 0);
+    let final_price = original_price;
+    const discount = Number(product.discount_percent || 0);
+    if (discount > 0 && discount <= 90) {
+      final_price = Math.round(original_price * (1 - discount / 100));
+    }
+
     u.cart.push({
       id: product.id,
       name: `${product.name} (${variant.name})`,
-      price: variant.price,
+      price: final_price,
+      original_price: original_price,
+      final_price: final_price
     });
 
     // FIX #3: Show ✅ toast for variant add
@@ -2043,7 +2386,7 @@ bot.action(/toggleVar_(\d+)_(\d+)/, async (ctx) => {
       );
     });
   } catch (e) {
-    console.log('toggleVar error:', e.message);
+    console.error('toggleVar error:', e.message);
     await safeAnswerCbQuery(ctx, '❌ Xatolik');
   }
 });
@@ -2092,9 +2435,222 @@ bot.action(/toggleProdAvail_(\d+)/, async (ctx) => {
       );
     });
   } catch (e) {
-    console.log('toggleProdAvail error:', e.message);
+    console.error('toggleProdAvail error:', e.message);
     await safeAnswerCbQuery(ctx, '❌ Xatolik');
   }
+});
+
+bot.action(/edit_prod_(\d+)/, async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const productId = Number(ctx.match[1]);
+  const u = getUser(ctx.from.id);
+
+  if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
+
+  db.get(`SELECT * FROM products WHERE id = ? AND cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
+    if (err || !product) return safeAnswerCbQuery(ctx, '❌ Mahsulot topilmadi');
+
+    u.temp.productId = productId;
+    u.step = "edit_product_field";
+
+    try {
+      await ctx.deleteMessage();
+    } catch (e) { }
+
+    await safeReply(
+      ctx,
+      `📝 "${product.name}" (ID: ${product.id}) ni tahrirlash:\nNimani o‘zgartirmoqchisiz?`,
+      Markup.keyboard([
+        ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+        ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+        ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+        ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+        ["❌ Bekor qilish"]
+      ]).resize()
+    );
+    await safeAnswerCbQuery(ctx);
+  });
+});
+
+bot.action(/admin_prod_page_(\d+)/, async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const page = Number(ctx.match[1]);
+  const u = getUser(ctx.from.id);
+  if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
+
+  sendAdminProductsPage(ctx, u.cafeAdminId, page, true);
+  await safeAnswerCbQuery(ctx);
+});
+
+function sendAdminProductsPage(ctx, cafeId, page = 0, isEdit = false) {
+  db.all(
+    `SELECT * FROM products WHERE cafe_id = ? ORDER BY id DESC`,
+    [cafeId],
+    (err, rows) => {
+      if (err) return safeSendMessage(ctx.from.id, "Xatolik bo‘ldi.");
+      if (!rows || !rows.length) {
+        if (!isEdit) {
+          getCafeMenuAsync(cafeId, (menu) => {
+            safeSendMessage(ctx.from.id, "Mahsulot yo‘q.", menu);
+          });
+        }
+        return;
+      }
+
+      const limit = 10;
+      const totalPages = Math.ceil(rows.length / limit);
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+
+      const pageItems = rows.slice(safePage * limit, (safePage + 1) * limit);
+
+      let msg = `📦 Mahsulotlar (Sahifa ${safePage + 1} / ${totalPages}):\n\n`;
+
+      pageItems.forEach((p, idx) => {
+        const globalIndex = safePage * limit + idx + 1;
+        const status = Number(p.available) === 1 ? "✅ Faol" : "❌ Yopiq";
+
+        const strike = (text) => String(text).split('').map(c => c + '\u0336').join('');
+        const discount = Number(p.discount_percent || 0);
+
+        let priceText = '';
+        try {
+          const variants = JSON.parse(p.variants || '[]');
+          if (variants && variants.length > 0) {
+            const enabledVariants = variants.filter(v => v.enabled !== false);
+            if (enabledVariants.length > 0) {
+              const prices = enabledVariants.map(v => Number(v.price || 0));
+              const minP = Math.min(...prices);
+              const maxP = Math.max(...prices);
+              if (discount > 0 && discount <= 90) {
+                const minDisc = Math.round(minP * (1 - discount / 100));
+                const maxDisc = Math.round(maxP * (1 - discount / 100));
+                priceText = minP === maxP ? `${strike(minP)} 👉 ${minDisc} so'm (-${discount}%)` : `${strike(minP)}-${strike(maxP)} 👉 ${minDisc}-${maxDisc} so'm (-${discount}%)`;
+              } else {
+                priceText = minP === maxP ? `${minP} so'm` : `${minP} - ${maxP} so'm`;
+              }
+            } else {
+              priceText = `0 so'm (barcha variantlar o'chirilgan)`;
+            }
+          } else {
+            const original_price = Number(p.price || 0);
+            if (discount > 0 && discount <= 90) {
+              const final_price = Math.round(original_price * (1 - discount / 100));
+              priceText = `${strike(original_price)} 👉 ${final_price} so'm (-${discount}%)`;
+            } else {
+              priceText = `${original_price} so'm`;
+            }
+          }
+        } catch (e) {
+          priceText = `${p.price || 0} so'm`;
+        }
+
+        msg += `🔹 ${globalIndex}-tovar (ID: ${p.id})\n`;
+        msg += `🍔 ${p.name || "-"}\n`;
+        msg += `💰 ${priceText}\n`;
+        msg += `📂 ${p.category || "-"}\n`;
+        msg += `📌 Holat: ${status}\n`;
+        try {
+          const pVariants = JSON.parse(p.variants || '[]');
+          if (pVariants && pVariants.length > 0) {
+            pVariants.forEach((v) => {
+              const vStatus = v.enabled !== false ? '✅' : '❌';
+              msg += `   ${vStatus} ${v.name} — ${v.price} so'm\n`;
+            });
+          }
+        } catch (e) { }
+        msg += `\n`;
+      });
+
+      const editButtons = [];
+      pageItems.forEach((p) => {
+        editButtons.push(Markup.button.callback(`✏️ ${p.id}`, `edit_prod_${p.id}`));
+      });
+
+      const inlineRows = [];
+      for (let i = 0; i < editButtons.length; i += 5) {
+        inlineRows.push(editButtons.slice(i, i + 5));
+      }
+
+      const navButtons = [];
+      if (safePage > 0) {
+        navButtons.push(Markup.button.callback("⬅️ Oldingi", `admin_prod_page_${safePage - 1}`));
+      }
+      if (safePage < totalPages - 1) {
+        navButtons.push(Markup.button.callback("➡️ Keyingi", `admin_prod_page_${safePage + 1}`));
+      }
+      if (navButtons.length > 0) {
+        inlineRows.push(navButtons);
+      }
+
+      const kb = inlineRows.length > 0 ? Markup.inlineKeyboard(inlineRows) : null;
+
+      if (isEdit) {
+        safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, msg, kb ? { reply_markup: kb.reply_markup } : undefined).catch(() => { });
+      } else {
+        getCafeMenuAsync(cafeId, async (menu) => {
+          await safeReply(ctx, "Mahsulotlar ro'yxati:", menu);
+          await safeReply(ctx, msg, kb ? kb : undefined);
+        });
+      }
+    }
+  );
+}
+
+// /foiz_ va komissiya tahriri — umumiy text handlerdan oldin
+bot.hears(/^\/foiz_(\d+)/, async (ctx) => {
+  const match = ctx.message.text.match(/^\/foiz_(\d+)/);
+  if (!match) return;
+
+  const cafeId = parseInt(match[1], 10);
+  const u = getUser(ctx.from.id);
+
+  db.get(`SELECT * FROM cafes WHERE id = ? AND admin_login`, [cafeId], (err, cafe) => {
+    if (err || !cafe || cafe.tariff_type !== "commission") {
+      return ctx.reply("❌ Bu cafe komissiya tizimida emas yoki topilmadi");
+    }
+
+    pushNavHistory(u);
+    u.selectedCafeId = cafeId;
+    u.step = "edit_commission_percent";
+
+    ctx.reply(
+      `📝 ${cafe.name} uchun yangi foizni kiriting (hozirgi: ${cafe.commission_percent || 0}%)\n0-100 oralig'ida:`,
+      Markup.keyboard([["⬅️ Orqaga"]]).resize(),
+    );
+  });
+});
+
+bot.use(async (ctx, next) => {
+  if (ctx.chat?.type !== "private") return next();
+  const u = getUser(ctx.from.id);
+
+  if (u.step === "edit_commission_percent" && ctx.message?.text) {
+    const t = ctx.message.text;
+
+    if (t === "⬅️ Orqaga") {
+      return goBack(ctx, u);
+    }
+
+    const newPercent = parseInt(t, 10);
+
+    if (isNaN(newPercent) || newPercent < 0 || newPercent > 100) {
+      return ctx.reply("❌ Noto'g'ri! Foiz 0-100 oralig'ida bo'lishi kerak.");
+    }
+
+    updateCommissionPercent(u.selectedCafeId, newPercent, (success, message) => {
+      if (success) {
+        u.step = "super";
+        u.selectedCafeId = null;
+        ctx.reply(message, superMenu());
+      } else {
+        ctx.reply("❌ " + message);
+      }
+    });
+
+    return;
+  }
+
+  return next();
 });
 
 bot.on("text", (ctx) => {
@@ -2102,9 +2658,16 @@ bot.on("text", (ctx) => {
   const text = ctx.message.text;
   const u = getUser(ctx.from.id);
 
-  // user cafelar
-  if (text === "🏪 Cafelar") {
-    db.all(`SELECT * FROM cafes WHERE is_visible = 1 AND is_open = 1 AND manual_frozen = 0 AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY name ASC`, [], (err, rows) => {
+  if (text === "⬅️ Orqaga") {
+    return goBack(ctx, u);
+  }
+
+  // user cafelar va restoranlar
+  if (text === "☕️ Cafelar" || text === "🍽 Restoranlar") {
+    const isRest = text === "🍽 Restoranlar";
+    const typeQuery = isRest ? "restaurant" : "cafe";
+
+    db.all(`SELECT * FROM cafes WHERE type = ? AND is_visible = 1 AND is_open = 1 AND manual_frozen = 0 AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY name ASC`, [typeQuery], (err, rows) => {
       if (err) return ctx.reply("Xatolik bo‘ldi.");
 
       const activeCafes = rows.filter(c => {
@@ -2113,9 +2676,11 @@ bot.on("text", (ctx) => {
         return true;
       });
 
-      if (!activeCafes.length) return ctx.reply("Hozircha ochiq cafe yo‘q.");
+      if (!activeCafes.length) return ctx.reply("❌ Hozircha mavjud emas");
 
-      const buttons = activeCafes.map((c) => [c.name]);
+      pushNavHistory(u);
+      const flatButtons = activeCafes.map((c) => c.name);
+      const buttons = chunkButtons(flatButtons, 2);
       buttons.push(["⬅️ Orqaga"]);
       ctx.reply("Tanlang:", Markup.keyboard(buttons).resize());
     });
@@ -2143,6 +2708,7 @@ bot.on("text", (ctx) => {
     db.get(`SELECT * FROM couriers WHERE login = ? AND password = ?`, [u.temp.courier_auth_login, text], (err, courier) => {
       if (err || !courier) return ctx.reply("Noto'g'ri login yoki parol. Qaytadan /courier bosing.");
 
+      pushNavHistory(u);
       u.courierId = courier.id;
       u.courierAuth = true;
       u.step = "courier_panel";
@@ -2252,15 +2818,18 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       (err, product) => {
         if (!product) return ctx.reply("Topilmadi ❌");
 
+        pushNavHistory(u);
         u.temp.productId = id;
         u.step = "edit_product_field";
 
         ctx.reply(
-          "Nimani o‘zgartirmoqchisiz?",
+          `📝 "${product.name}" (ID: ${product.id}) ni tahrirlash:\nNimani o‘zgartirmoqchisiz?`,
           Markup.keyboard([
-            ["Nomi", "Narxi"],
-            ["Tavsif"],
-            ["⬅️ Orqaga"],
+            ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+            ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+            ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+            ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+            ["❌ Bekor qilish"]
           ]).resize(),
         );
       },
@@ -2270,27 +2839,253 @@ Ishlab topildi: ${stats.totalSum} so'm`;
   }
 
   if (u.step === "edit_product_field") {
+    if (text === "❌ Bekor qilish") {
+      u.step = "cafe";
+      u.temp = {};
+      return getCafeMenuAsync(u.cafeAdminId, (menu) => {
+        ctx.reply("❌ Bekor qilindi", menu);
+      });
+    }
+
     const map = {
-      Nomi: "name",
-      Narxi: "price",
-      Tavsif: "description",
+      "✏️ Nomini o‘zgartirish": "name",
+      "💰 Narxini o‘zgartirish": "price",
+      "📝 Izohni o‘zgartirish": "description",
+      "🖼 Rasmni o‘zgartirish / qo‘shish": "image_file_id",
+      "🏷 Chegirma qo‘shish": "discount_percent",
+      "➕ Variant qo‘shish": "add_variant",
+      "✏️ Variantni o‘zgartirish": "edit_variant",
+      "🔄 Variant on/off": "toggle_variant"
     };
 
-    if (!map[text]) return ctx.reply("Tugmadan tanlang");
+    if (!map[text]) return ctx.reply("Tugmalardan birini tanlang yoki ❌ Bekor qilish tugmasini bosing.");
 
     u.temp.editField = map[text];
+
+    if (u.temp.editField === "add_variant") {
+      u.step = "edit_product_add_variant";
+      return ctx.reply("Yangi variant nomi va narxini yozing (Masalan: Katta 35000):", simpleBackMenu());
+    }
+
+    if (u.temp.editField === "edit_variant" || u.temp.editField === "toggle_variant") {
+      db.get(`SELECT variants FROM products WHERE id = ?`, [u.temp.productId], (err, p) => {
+        let variants = [];
+        try { variants = JSON.parse(p.variants || "[]"); } catch (e) { }
+
+        if (!variants || variants.length === 0) {
+          return ctx.reply("Hozircha variantlar yo‘q.", Markup.keyboard([
+            ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+            ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+            ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+            ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+            ["❌ Bekor qilish"]
+          ]).resize());
+        }
+
+        pushNavHistory(u);
+        if (u.temp.editField === "edit_variant") {
+          u.step = "edit_product_select_variant";
+          const buttons = variants.map((v, i) => [`${i + 1}. ${v.name} - ${v.price}`]);
+          buttons.push(["⬅️ Orqaga"]);
+          ctx.reply("Qaysi variantni o‘zgartirmoqchisiz?", Markup.keyboard(buttons).resize());
+        } else {
+          u.step = "edit_product_toggle_variant";
+          const buttons = variants.map((v, i) => [`${v.enabled !== false ? '✅' : '❌'} ${v.name}`]);
+          buttons.push(["⬅️ Orqaga"]);
+          ctx.reply("Qaysi variantni yoqish/o‘chirishni xohlaysiz?", Markup.keyboard(buttons).resize());
+        }
+      });
+      return;
+    }
+
     u.step = "edit_product_value";
 
-    return ctx.reply("Yangi qiymatni yozing:");
+    if (u.temp.editField === "image_file_id") {
+      db.get(`SELECT image_file_id FROM products WHERE id = ?`, [u.temp.productId], (err, p) => {
+        if (p && p.image_file_id) {
+          return ctx.reply("Yangi rasm yuboring:", simpleBackMenu());
+        } else {
+          return ctx.reply("Rasm yuboring:", simpleBackMenu());
+        }
+      });
+      return;
+    }
+
+    return ctx.reply("Yangi qiymatni yozing:", simpleBackMenu());
+  }
+
+  if (u.step === "edit_product_add_variant") {
+    if (text === "⬅️ Orqaga") {
+      u.step = "edit_product_field";
+      return ctx.reply("Nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+        ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+        ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+        ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+        ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+        ["❌ Bekor qilish"]
+      ]).resize());
+    }
+
+    const parts = text.split(" ");
+    const priceStr = parts.pop();
+    const price = Number(priceStr);
+    const name = parts.join(" ");
+
+    if (!price || !name) return ctx.reply("❌ Noto‘g‘ri ma’lumot. Masalan: Katta 35000");
+
+    db.get(`SELECT variants FROM products WHERE id = ?`, [u.temp.productId], (err, p) => {
+      let variants = [];
+      try { variants = JSON.parse(p.variants || "[]"); } catch (e) { }
+
+      variants.push({ name, price, enabled: true });
+
+      db.run(`UPDATE products SET variants = ? WHERE id = ?`, [JSON.stringify(variants), u.temp.productId], (err) => {
+        ctx.reply("✅ Variant qo‘shildi\n\nYana nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+          ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+          ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+          ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+          ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+          ["❌ Bekor qilish"]
+        ]).resize());
+        u.step = "edit_product_field";
+      });
+    });
+    return;
+  }
+
+  if (u.step === "edit_product_select_variant") {
+    if (text === "⬅️ Orqaga") {
+      u.step = "edit_product_field";
+      return ctx.reply("Nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+        ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+        ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+        ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+        ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+        ["❌ Bekor qilish"]
+      ]).resize());
+    }
+
+    db.get(`SELECT variants FROM products WHERE id = ?`, [u.temp.productId], (err, p) => {
+      let variants = [];
+      try { variants = JSON.parse(p.variants || "[]"); } catch (e) { }
+
+      const match = text.match(/^(\d+)\./);
+      if (!match) return ctx.reply("Variantni tugmadan tanlang.");
+      const variantIndex = Number(match[1]) - 1;
+
+      if (!variants[variantIndex]) return ctx.reply("Variant topilmadi.");
+
+      u.temp.editVariantIndex = variantIndex;
+      u.step = "edit_product_variant_value";
+      ctx.reply(`Siz "${variants[variantIndex].name}" variantini tanladingiz.\nYangi nomi va narxini yozing (Masalan: Katta 35000):`, simpleBackMenu());
+    });
+    return;
+  }
+
+  if (u.step === "edit_product_variant_value") {
+    if (text === "⬅️ Orqaga") {
+      u.step = "edit_product_field";
+      return ctx.reply("Bekor qilindi.\nNimani o‘zgartirmoqchisiz?", Markup.keyboard([
+        ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+        ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+        ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+        ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+        ["❌ Bekor qilish"]
+      ]).resize());
+    }
+
+    const parts = text.split(" ");
+    const priceStr = parts.pop();
+    const price = Number(priceStr);
+    const name = parts.join(" ");
+
+    if (!price || !name) return ctx.reply("❌ Noto‘g‘ri ma’lumot. Masalan: Katta 35000");
+
+    db.get(`SELECT variants FROM products WHERE id = ?`, [u.temp.productId], (err, p) => {
+      let variants = [];
+      try { variants = JSON.parse(p.variants || "[]"); } catch (e) { }
+
+      if (!variants[u.temp.editVariantIndex]) return ctx.reply("Xatolik ❌");
+      variants[u.temp.editVariantIndex].name = name;
+      variants[u.temp.editVariantIndex].price = price;
+
+      db.run(`UPDATE products SET variants = ? WHERE id = ?`, [JSON.stringify(variants), u.temp.productId], (err) => {
+        ctx.reply("✅ Variant yangilandi\n\nYana nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+          ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+          ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+          ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+          ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+          ["❌ Bekor qilish"]
+        ]).resize());
+        u.step = "edit_product_field";
+      });
+    });
+    return;
+  }
+
+  if (u.step === "edit_product_toggle_variant") {
+    if (text === "⬅️ Orqaga") {
+      u.step = "edit_product_field";
+      return ctx.reply("Nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+        ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+        ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+        ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+        ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+        ["❌ Bekor qilish"]
+      ]).resize());
+    }
+
+    db.get(`SELECT variants FROM products WHERE id = ?`, [u.temp.productId], (err, p) => {
+      let variants = [];
+      try { variants = JSON.parse(p.variants || "[]"); } catch (e) { }
+
+      const cleanText = text.replace('✅ ', '').replace('❌ ', '');
+      const variantIndex = variants.findIndex(v => cleanText === v.name);
+      if (variantIndex === -1) return ctx.reply("Variant topilmadi.");
+
+      variants[variantIndex].enabled = variants[variantIndex].enabled === false ? true : false;
+
+      db.run(`UPDATE products SET variants = ? WHERE id = ?`, [JSON.stringify(variants), u.temp.productId], (err) => {
+        ctx.reply("✅ Holati o‘zgardi\n\nYana nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+          ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+          ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+          ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+          ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+          ["❌ Bekor qilish"]
+        ]).resize());
+        u.step = "edit_product_field";
+      });
+    });
+    return;
   }
 
   if (u.step === "edit_product_value") {
+    if (text === "⬅️ Orqaga") {
+      u.step = "edit_product_field";
+      return ctx.reply("Nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+        ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+        ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+        ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+        ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+        ["❌ Bekor qilish"]
+      ]).resize());
+    }
+
     const field = u.temp.editField;
     let value = text;
 
+    if (field === "image_file_id") {
+      return ctx.reply("❌ Noto‘g‘ri ma’lumot (faqat rasm yuboring)");
+    }
+
+    if (field === "discount_percent") {
+      value = Number(text);
+      if (isNaN(value) || value < 0 || value > 90) return ctx.reply("❌ Noto‘g‘ri ma’lumot (faqat 0 dan 90 gacha raqam kiriting)");
+    }
+
     if (field === "price") {
       value = Number(text);
-      if (!value) return ctx.reply("Narx noto‘g‘ri ❌");
+      if (!value || isNaN(value)) return ctx.reply("❌ Noto‘g‘ri ma’lumot");
     }
 
     db.run(
@@ -2299,12 +3094,14 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       (err) => {
         if (err) return ctx.reply("Xatolik ❌");
 
-        u.step = "cafe";
-        u.temp = {};
-
-        getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply("✅ Yangilandi", menu);
-        });
+        u.step = "edit_product_field";
+        ctx.reply("✅ Yangilandi\n\nYana nimani o‘zgartirmoqchisiz?", Markup.keyboard([
+          ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
+          ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
+          ["➕ Variant qo‘shish", "✏️ Variantni o‘zgartirish"],
+          ["🔄 Variant on/off", "🏷 Chegirma qo‘shish"],
+          ["❌ Bekor qilish"]
+        ]).resize());
       },
     );
 
@@ -2550,13 +3347,13 @@ Ishlab topildi: ${stats.totalSum} so'm`;
 
       // Удалить все заказы этого кафе
       db.run(`DELETE FROM orders WHERE cafe_id = ?`, [cafeId]);
-      
+
       // Удалить всех курьеров этого кафе
       db.run(`DELETE FROM couriers WHERE cafe_id = ?`, [cafeId]);
-      
+
       // Удалить все товары этого кафе
       db.run(`DELETE FROM products WHERE cafe_id = ?`, [cafeId]);
-      
+
       // Удалить само кафе
       db.run(`DELETE FROM cafes WHERE id = ?`, [cafeId], (err) => {
         if (err) {
@@ -2717,9 +3514,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
     }
 
     if (field === "order_group_id") {
-      const n = Number(value);
-      if (!Number.isFinite(n) || !Number.isInteger(n)) return ctx.reply("❌ Order group ID raqam bo‘lishi kerak");
-      value = n;
+      value = String(value).trim();
     }
 
     if (field === "delivery_price" || field === "balance") {
@@ -2827,6 +3622,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
 
         if (isCafeFrozen(cafe)) return showFrozenMessage(ctx);
 
+        pushNavHistory(u);
         u.step = "cafe";
         u.cafeAdminId = cafe.id; // 🔥 MUHIM
         u.selectedCafeId = cafe.id; // 🔥 SHUNI HAM QO‘SH
@@ -2845,7 +3641,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
     // stop further handlers from running
     db.get(`SELECT * FROM cafes WHERE id = ?`, [u.cafeAdminId], (err, cafe) => {
       if (!cafe) return;
-      
+
       // Skip abonement display for commission cafes
       if (cafe.tariff_type === 'commission') {
         return ctx.reply("❌ Bu cafe balans tizimida ishleydi, abonement yo'q.", generateCafePanelMenu(cafe));
@@ -2874,7 +3670,7 @@ ${formatDate(cafe.paid_until)}`;
     // stop further handlers from running
     db.get(`SELECT * FROM cafes WHERE id = ?`, [u.cafeAdminId], (err, cafe) => {
       if (!cafe) return;
-      
+
       // Показать баланс только для процентного тарифа
       if (cafe.tariff_type !== 'commission') {
         return ctx.reply("❌ Balans faqat foizli tariff uchun mavjud", generateCafePanelMenu(cafe));
@@ -2882,9 +3678,9 @@ ${formatDate(cafe.paid_until)}`;
 
       let msg = `💰 BALANS XOLATI
 `;
-      
+
       msg += `\n💵 Joriy balans: ${cafe.balance || 0} so'm`;
-      
+
       if ((cafe.balance || 0) <= 0) {
         msg += `\n❌ Balans tugadi! Zakazlar qabul qilinmaydi.`;
       } else if ((cafe.balance || 0) < 100000) {
@@ -2896,7 +3692,7 @@ ${formatDate(cafe.paid_until)}`;
       if (cafe.commission_percent) {
         msg += `\n\n📊 Komissiya stavkasi: ${cafe.commission_percent}%`;
       }
-      
+
       // Получить информацию о списаниях и последние 5 заказов
       db.get(
         `SELECT COUNT(*) as total_orders, SUM(commission_charged) as total_charged FROM orders WHERE cafe_id = ? AND commission_charged > 0`,
@@ -2932,188 +3728,12 @@ ${formatDate(cafe.paid_until)}`;
     return;
   }
 
-  // orqaga
-  if (text === "⬅️ Orqaga") {
-    if (
-      [
-        "name",
-        "about",
-        "phone",
-        "instagram",
-        "menu_url",
-        "location_text",
-        "location",
-        "open_time",
-        "close_time",
-        "admin_login",
-        "admin_password",
-        "order_group_id",
-        "delivery_price",
-        "card_name",
-        "card_number",
-        "bank_name",
-        "card_qr_id",
-        "image",
-        "freeze_id",
-        "open_id",
-        "extend_id",
-        "balance_cafe_id",
-        "balance_action",
-        "balance_amount",
-        "delete_cafe_id",
-        "delete_cafe_confirm",
-        "tariff_type",
-        "commission_percent",
-        "initial_balance",
-        "owner_telegram_id",
-        "cafe_type",
-      ].includes(u.step)
-    ) {
-      u.step = "super";
-      u.temp = {};
-      return ctx.reply("Super panel", superMenu());
-    }
-
-    if (
-      [
-        "product_name",
-        "product_price",
-        "product_desc",
-        "product_category",
-        "product_subcategory",
-        "has_variants",
-        "product_variant_entry",
-        "product_image",
-        "courier_name",
-        "courier_phone",
-        "courier_telegram",
-        "table_count",
-        "courier_car_model",
-        "courier_car_number",
-        "courier_telegram",
-        "toggle_product",
-        "delete_product",
-      ].includes(u.step)
-    ) {
-      u.step = "cafe";
-      u.temp = {};
-      getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply("Cafe panel", menu);
-        });
-        return;
-    }
-
-        // Handle payment flow back navigation
-    if (u.step === "payment_type") {
-      u.step = "order_note";
-      return ctx.reply("Izoh yozing.\nAgar yo'q bo'lsa: 'Yo'q' tugmasini bosing:", noteMenu());
-    }
-
-    if (u.step === "payment_photo") {
-      u.step = "payment_type";
-      return ctx.reply("To'lov turini tanlang:", Markup.keyboard([
-        ["💵 Naqd pul", "💳 Karta orqali"],
-        ["⬅️ Orqaga"]
-      ]).resize());
-    }
-
-    if (
-      [
-        "order_type",
-        "order_name",
-        "order_phone_contact",
-        "order_address",
-        "order_location",
-        "order_note",
-        "order_table",
-      ].includes(u.step)
-    ) {
-      u.step = "home";
-      resetOrderDraft(u);
-
-      db.get(
-        `SELECT * FROM cafes WHERE id = ?`,
-        [u.selectedCafeId],
-        (err, cafe) => {
-          if (!cafe) return ctx.reply("Menu:", mainMenu());
-          ctx.reply("Cafe menyusi:", customerCafeMenu(cafe));
-        },
-      );
-      return;
-    }
-
-    if (u.step === "choose_category") {
-      u.step = "home";
-      db.get(`SELECT * FROM cafes WHERE id = ?`, [u.selectedCafeId], (err, cafe) => {
-        if (!cafe) return ctx.reply("Menu:", mainMenu());
-        ctx.reply("Cafe menyusi:", customerCafeMenu(cafe));
-      });
-      return;
-    }
-
-    if (u.step === "choose_subcategory") {
-      u.step = "choose_category";
-      db.all(`SELECT DISTINCT category FROM products WHERE cafe_id = ? AND available = 1 AND category IS NOT NULL AND category != '' AND category != 'Boshqalar'`, [u.selectedCafeId], (err, rows) => {
-        if (err || !rows.length) {
-          u.step = "home";
-          return ctx.reply("Hozircha mahsulotlar yo‘q.");
-        }
-        const buttons = rows.map(r => [r.category]);
-        buttons.push(["⬅️ Orqaga"]);
-        ctx.reply("Kategoriyani tanlang:", Markup.keyboard(buttons).resize());
-      });
-      return;
-    }
-
-    // Назад из меню кафе — вернуть в список всех кафе
-    if (
-      u.step === "inside_cafe" ||
-      (u.selectedCafeId && u.step === "home")
-    ) {
-      u.step = "home";
-      u.selectedCafeId = null;
-      u.selectedCafeName = null;
-      u.temp = {};
-      
-      // Показать список кафе
-      db.all(`SELECT * FROM cafes ORDER BY name ASC`, [], (err, rows) => {
-        if (err) return ctx.reply("Xatolik bo'ldi.");
-        if (!rows.length) return ctx.reply("Cafe yo'q.");
-
-        const buttons = rows.map((c) => {
-          const open = isCafeOpenByTime(c) && c.is_open;
-          const frozen = isCafeFrozen(c);
-          if (frozen) return [`❄️ ${c.name}`];
-          return [open ? c.name : `❌ ${c.name}`];
-        });
-
-        buttons.push(["⬅️ Orqaga"]);
-        ctx.reply("Tanlang:", Markup.keyboard(buttons).resize());
-      });
-      return;
-    }
-
-    // FIX #2: Fallback — qaytishda xuddi shu cafega qaytamiz, mainMenuga emas
-    u.step = "home";
-    u.temp = {};
-    if (u.selectedCafeId) {
-      db.get(`SELECT * FROM cafes WHERE id = ?`, [u.selectedCafeId], (err, cafe) => {
-        if (!cafe) {
-          u.selectedCafeId = null;
-          return ctx.reply("Menu:", mainMenu());
-        }
-        ctx.reply("Cafe menyusi:", customerCafeMenu(cafe));
-      });
-      return;
-    }
-    u.selectedCafeId = null;
-    return ctx.reply("Menu:", mainMenu());
-  }
-
   if (text === "🏠 Menu") {
     u.step = "home";
     u.temp = {};
     u.selectedCafeId = null;
+    u.selectedCafeName = null;
+    u.history = [];
     return ctx.reply("Menu:", mainMenu());
   }
 
@@ -3166,6 +3786,13 @@ ${formatDate(cafe.paid_until)}`;
     });
 
     return;
+  }
+
+  // reklama
+  if (text === "📢 Reklama") {
+    if (!u.superAuth) return;
+    u.step = "reklama_input";
+    return ctx.reply("Reklama xabarini yuboring (matn, rasm yoki video):", Markup.keyboard([["⬅️ Orqaga"]]).resize());
   }
 
   // umumiy info
@@ -3260,7 +3887,7 @@ ${formatDate(cafe.paid_until)}`;
   }
 
   if (u.step === "order_group_id") {
-    u.temp.order_group_id = text;
+    u.temp.order_group_id = String(text).trim();
     u.step = "delivery_price";
     return ctx.reply("Yetkazib berish narxi. Masalan: 10000", simpleBackMenu());
   }
@@ -3389,7 +4016,7 @@ ${formatDate(cafe.paid_until)}`;
 
     db.get(`SELECT * FROM cafes WHERE id = ?`, [id], (err, cafe) => {
       if (!cafe) return ctx.reply("Cafe topilmadi");
-      
+
       // Only allow extending subscription cafes, not commission cafes
       if (cafe.tariff_type === 'commission') {
         return ctx.reply("❌ Bu cafe komissiya tizimida ishleydi. Abonement yo'q.");
@@ -3560,76 +4187,7 @@ Yana variant yozing yoki 'tayyor' deng:`);
       return ctx.reply("Avval /cafePanel orqali qayta login qiling.");
     }
 
-
-    db.all(
-      `SELECT * FROM products WHERE cafe_id = ? ORDER BY id DESC`,
-      [u.cafeAdminId],
-      (err, rows) => {
-
-        if (err) return ctx.reply("Xatolik bo‘ldi.");
-        if (!rows || !rows.length) {
-          getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply("Mahsulot yo‘q.", menu);
-        });
-        return;
-        }
-
-        let msg = "📦 Mahsulotlar:\n\n";
-
-        rows.forEach((p, index) => {
-          const status = Number(p.available) === 1 ? "✅ Faol" : "❌ Yopiq";
-
-          let priceText = '';
-          try {
-            const variants = JSON.parse(p.variants || '[]');
-            if (variants && variants.length > 0) {
-              const enabledVariants = variants.filter(v => v.enabled !== false);
-              if (enabledVariants.length > 0) {
-                const prices = enabledVariants.map(v => Number(v.price || 0));
-                const minP = Math.min(...prices);
-                const maxP = Math.max(...prices);
-                priceText = minP === maxP ? `${minP} so'm` : `${minP} - ${maxP} so'm`;
-              } else {
-                priceText = `0 so'm (barcha variantlar o'chirilgan)`;
-              }
-            } else {
-              priceText = `${p.price || 0} so'm`;
-            }
-          } catch (e) {
-            priceText = `${p.price || 0} so'm`;
-          }
-
-          msg += `🔹 ${index + 1}-tovar (ID: ${p.id})
-`;
-          msg += `🍔 ${p.name || "-"}
-`;
-          msg += `💰 ${priceText}
-`;
-          msg += `📂 ${p.category || "-"}
-`;
-          msg += `📌 Holat: ${status}
-`;
-          try {
-            const pVariants = JSON.parse(p.variants || '[]');
-            if (pVariants && pVariants.length > 0) {
-              pVariants.forEach((v, vi) => {
-                const vStatus = v.enabled !== false ? '✅' : '❌';
-                msg += `   ${vStatus} ${v.name} — ${v.price} so'm
-`;
-              });
-            }
-          } catch (e) { }
-          msg += `
-`;
-        });
-
-        getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply(msg, menu);
-        });
-        return;
-      },
-    );
-
+    sendAdminProductsPage(ctx, u.cafeAdminId, 0, false);
     return;
   }
   // courier qo‘shish
@@ -3854,8 +4412,8 @@ Parol: ${courierPassword}`;
       }
 
       getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply(msg, menu);
-        });
+        ctx.reply(msg, menu);
+      });
     });
   }
 
@@ -3898,6 +4456,7 @@ Parol: ${courierPassword}`;
       if (err) return ctx.reply("Xatolik bo‘ldi.");
       if (!rows.length) return ctx.reply("Cafe yo‘q.");
 
+      pushNavHistory(u);
       const buttons = rows.map((c) => {
         const open = isCafeOpenByTime(c) && c.is_open;
         const frozen = isCafeFrozen(c);
@@ -3918,6 +4477,13 @@ Parol: ${courierPassword}`;
     if (!cafe) return;
 
     autoFreezeCafeIfExpired(cafe);
+
+    pushNavHistory(u);
+
+    if (u.selectedCafeId && Number(u.selectedCafeId) !== Number(cafe.id) && u.cart && u.cart.length > 0) {
+      u.cart = [];
+      ctx.reply("🛒 Savatcha tozalandi (boshqa cafe tanlandi)");
+    }
 
     u.selectedCafeId = cafe.id;
     u.selectedCafeName = cafe.name;
@@ -4033,8 +4599,10 @@ ${cafe.open_time || "-"} — ${cafe.close_time || "-"}
     db.all(`SELECT DISTINCT category FROM products WHERE cafe_id = ? AND available = 1 AND category IS NOT NULL AND category != '' AND category != 'Boshqalar'`, [u.selectedCafeId], (err, rows) => {
       if (err || !rows.length) return ctx.reply("Hozircha mahsulotlar yo‘q.");
 
+      pushNavHistory(u);
       u.step = "choose_category";
-      const buttons = rows.map(r => [r.category]);
+      const flatButtons = rows.map(r => r.category);
+      const buttons = chunkButtons(flatButtons, 2);
       buttons.push(["⬅️ Orqaga"]);
       ctx.reply("Kategoriyani tanlang:", Markup.keyboard(buttons).resize());
     });
@@ -4045,13 +4613,15 @@ ${cafe.open_time || "-"} — ${cafe.close_time || "-"}
     const category = text;
     db.all(`SELECT DISTINCT subcategory FROM products WHERE cafe_id = ? AND category = ? AND available = 1 AND subcategory IS NOT NULL AND subcategory != '' AND subcategory != 'Boshqalar'`, [u.selectedCafeId, category], (err, rows) => {
       if (err) return;
+      pushNavHistory(u);
       if (!rows.length) {
         u.step = "home";
         return showProducts(ctx, u.selectedCafeId, category, null);
       }
       u.temp.selectedCategory = category;
       u.step = "choose_subcategory";
-      const buttons = rows.map(r => [r.subcategory]);
+      const flatButtons = rows.map(r => r.subcategory);
+      const buttons = chunkButtons(flatButtons, 2);
       buttons.push(["⬅️ Orqaga"]);
       ctx.reply("Bo‘limni tanlang:", Markup.keyboard(buttons).resize());
     });
@@ -4072,10 +4642,19 @@ ${cafe.open_time || "-"} — ${cafe.close_time || "-"}
     db.get(`SELECT * FROM products WHERE id = ?`, [id], (err, product) => {
       if (!product) return ctx.reply("Mahsulot topilmadi.");
 
+      const original_price = Number(product.price || 0);
+      let final_price = original_price;
+      const discount = Number(product.discount_percent || 0);
+      if (discount > 0 && discount <= 90) {
+        final_price = Math.round(original_price * (1 - discount / 100));
+      }
+
       u.cart.push({
         id: product.id,
         name: product.name,
-        price: product.price,
+        price: final_price,
+        original_price: original_price,
+        final_price: final_price
       });
 
       ctx.reply(`🛒 Qo‘shildi: ${product.name}`);
@@ -4168,6 +4747,8 @@ ${cartText}
         (err, cafe) => {
           if (!cafe) return ctx.reply("Cafe topilmadi.");
 
+          pushNavHistory(u);
+
           const count = Number(cafe.table_count || 0);
 
           if (count <= 0) {
@@ -4212,6 +4793,7 @@ ${cartText}
           return ctx.reply("Bunday stol yo‘q. Tugmadan tanlang.");
         }
 
+        pushNavHistory(u);
         u.orderDraft.table_number = String(tableNumber);
         u.step = "order_note";
 
@@ -4244,31 +4826,42 @@ ${cartText}
     u.orderDraft.payment_status = u.orderDraft.payment_type === "cash" ? "unpaid" : "pending_verification";
 
     if (u.orderDraft.payment_type === "card_transfer") {
-      db.get(`SELECT * FROM cafes WHERE id = ?`, [u.selectedCafeId], (err, cafe) => {
+      db.get(`SELECT * FROM cafes WHERE id = ?`, [u.selectedCafeId], async (err, cafe) => {
         if (!cafe) return ctx.reply("Cafe topilmadi.");
         if (!cafe.card_number) {
           u.step = "payment_type";
           return ctx.reply(
-            "⚠️ Karta ma'lumotlari mavjud emas. Iltimos, naqd to'lovni tanlang.",
+            "❌ Karta ma’lumotlari mavjud emas",
             Markup.keyboard([["💵 Naqd pul"], ["⬅️ Orqaga"]]).resize()
           );
         }
+        pushNavHistory(u);
         u.step = "payment_photo";
-        let msg = `Karta orqali to'lov:
 
-`;
-        if (cafe.card_name) msg += `👤 Ism: ${cafe.card_name}
-`;
-        msg += `💳 Karta: ${cafe.card_number}
-`;
-        if (cafe.bank_name) msg += `🏦 Bank: ${cafe.bank_name}
-`;
-        msg += `
-Iltimos, to'lovni amalga oshirgach, chek (skrinshot) yuboring:`;
-        if (cafe.card_qr_id) {
-          ctx.replyWithPhoto(cafe.card_qr_id, { caption: msg, ...simpleBackMenu() });
+        let msg = `💳 To‘lov uchun:\n\nKarta: ${cafe.card_number}\n`;
+        if (cafe.card_name) msg += `Ism: ${cafe.card_name}\n`;
+        if (cafe.bank_name) msg += `🏦 Bank: ${cafe.bank_name}\n`;
+        msg += `\n📸 Chekni yuboring (rasm yoki file)`;
+
+        const cardPhoto = String(cafe.card_qr_id || "").trim();
+
+        if (cardPhoto.length >= 20 && cardPhoto.toLowerCase() !== "yoq") {
+          try {
+            await ctx.replyWithPhoto(cardPhoto, { caption: msg, ...simpleBackMenu() });
+          } catch (e) {
+            console.error("CARD PHOTO ERROR, SENDING TEXT:", e.message);
+            try {
+              await ctx.reply(msg, simpleBackMenu());
+            } catch (e2) {
+              console.error("TEXT MSG ERROR:", e2.message);
+            }
+          }
         } else {
-          ctx.reply(msg, simpleBackMenu());
+          try {
+            await ctx.reply(msg, simpleBackMenu());
+          } catch (e) {
+            console.error("TEXT MSG ERROR:", e.message);
+          }
         }
       });
       return;
@@ -4279,19 +4872,19 @@ Iltimos, to'lovni amalga oshirgach, chek (skrinshot) yuboring:`;
 });
 
 bot.catch((err, ctx) => {
-  console.log("BOT ERROR:", err.message);
+  console.error("BOT ERROR:", err.message);
 });
 
 bot.catch((err) => {
-  console.log("GLOBAL BOT ERROR:", err);
+  console.error("GLOBAL BOT ERROR:", err);
 });
 
 process.on("uncaughtException", (err) => {
-  console.log("❌ UNCAUGHT EXCEPTION:", err);
+  console.error("❌ UNCAUGHT EXCEPTION:", err);
 });
 
 process.on("unhandledRejection", (err) => {
-  console.log("❌ UNHANDLED REJECTION:", err);
+  console.error("❌ UNHANDLED REJECTION:", err);
 });
 
 
@@ -4400,107 +4993,113 @@ function finalizeOrder(ctx, u) {
             `\n\n💰 Jami: ${order.total} so'm`;
 
           if (order.payment_status === 'pending_verification') {
-            sendVerificationToCafeGroup(order, cafe);
-            const pendingText = `⏳ To'lov tekshirilmoqda.\nTasksdiqlangandan so'ng xabar olasiz.\n\n📋 Zakaz #${orderId}\n\n${itemsText}` +
-              (order.delivery_price > 0 ? `\n🚚 Yetkazib berish: ${order.delivery_price} so'm` : '') +
-              `\n\n💰 Jami: ${order.total} so'm`;
-            safeSendMessage(ctx.from.id, pendingText, mainMenu());
+            sendVerificationToCafeGroup(order, cafe).then(success => {
+              if (success) {
+                const pendingText = `⏳ To'lov tekshirilmoqda.\nTasksdiqlangandan so'ng xabar olasiz.\n\n📋 Zakaz #${orderId}\n\n${itemsText}` +
+                  (order.delivery_price > 0 ? `\n🚚 Yetkazib berish: ${order.delivery_price} so'm` : '') +
+                  `\n\n💰 Jami: ${order.total} so'm`;
+                safeSendMessage(ctx.from.id, pendingText, mainMenu());
+                u.cart = []; u.step = "home"; resetOrderDraft(u);
+              } else {
+                safeSendMessage(ctx.from.id, "❌ Groupga yuborib bo‘lmadi", mainMenu());
+              }
+            });
           } else {
-            if (cafe.order_group_id) { sendOrderToCafeGroup(order, cafe); }
-            safeSendMessage(ctx.from.id, receiptText, mainMenu());
+            sendOrderToCafeGroup(order, cafe).then(success => {
+              if (success) {
+                safeSendMessage(ctx.from.id, receiptText, mainMenu());
+                u.cart = []; u.step = "home"; resetOrderDraft(u);
+              } else {
+                safeSendMessage(ctx.from.id, "❌ Groupga yuborib bo‘lmadi", mainMenu());
+              }
+            });
           }
-          u.cart = []; u.step = "home"; resetOrderDraft(u);
         });
       }
     );
   });
 }
 
-function sendVerificationToCafeGroup(order, cafe) {
-  if (!cafe.order_group_id) return;
+async function sendVerificationToCafeGroup(order, cafe) {
+  if (!cafe.order_group_id) return false;
+
+  let groupId = String(cafe.order_group_id).trim().replace(".0", "");
+
   const kbd = Markup.inlineKeyboard([
     [Markup.button.callback("✅ Tasdiqlash", `verify_yes_${order.id}`)],
     [Markup.button.callback("❌ Rad etish", `verify_no_${order.id}`)]
   ]);
 
-  const msg = `💳 TO'LOV TEKSHIRUVI
+  let itemsList = [];
+  try { itemsList = JSON.parse(order.items_json || '[]'); } catch (e) { }
+  const itemsText = Array.isArray(itemsList) ? itemsList.map((p, i) => `${i + 1}. ${p.name} — ${p.price} so'm`).join('\n') : '';
 
-Zakaz: #${order.id}
-Mijoz: ${order.customer_name}
-Telefon: ${order.customer_phone}
-Summa: ${order.total} so'm`;
-  if (order.payment_photo_id) {
-    bot.telegram.sendPhoto(cafe.order_group_id, order.payment_photo_id, { caption: msg, ...kbd });
-  } else {
-    bot.telegram.sendMessage(cafe.order_group_id, msg, kbd);
+  let msg = `💳 TO'LOV TEKSHIRUVI\n\n` +
+    `🆕 Yangi zakaz #${order.id}\n\n${itemsText}\n\n` +
+    `📦 Turi: ${order.order_type}\n` +
+    `👤 Mijoz: ${order.customer_name}\n` +
+    `📞 Telefon: ${order.customer_phone}\n` +
+    `Summa: ${order.total} so'm`;
+
+  if (order.order_type === "🚚 Yetkazib berish") {
+    msg += `\n📍 Manzil: ${order.address || "-"}`;
+    msg += `\n🚚 Delivery narxi: ${order.delivery_price} so'm`;
+  }
+  if (order.order_type === "🍽 Shu yerda yeyish") {
+    msg += `\n🪑 Stol: ${order.table_number || "-"}`;
+  }
+  if (order.note && String(order.note).trim() !== "") {
+    msg += `\n📝 Izoh: ${String(order.note).trim()}`;
+  }
+
+  try {
+    let sentMsg;
+    if (order.payment_photo_id) {
+      if (order.payment_photo_id.startsWith("DOC:")) {
+        msg = `💳 Online to‘lov (file)\n\n` + msg;
+        try {
+          sentMsg = await bot.telegram.sendDocument(groupId, order.payment_photo_id.substring(4), { caption: msg, ...kbd });
+        } catch (docErr) {
+          console.error("GROUP SEND DOC ERROR:", docErr.message);
+          sentMsg = await bot.telegram.sendMessage(groupId, msg, kbd);
+        }
+      } else {
+        try {
+          sentMsg = await bot.telegram.sendPhoto(groupId, order.payment_photo_id, { caption: msg, ...kbd });
+        } catch (photoErr) {
+          console.error("GROUP SEND PHOTO ERROR:", photoErr.message);
+          sentMsg = await bot.telegram.sendMessage(groupId, msg, kbd);
+        }
+      }
+    } else {
+      sentMsg = await bot.telegram.sendMessage(groupId, msg, kbd);
+    }
+
+
+    if (sentMsg) {
+      db.run(`UPDATE orders SET group_main_msg_id = ? WHERE id = ?`, [`${groupId}_${sentMsg.message_id}`, order.id]);
+    }
+
+    if (order.latitude && order.longitude) {
+      try {
+        await bot.telegram.sendLocation(groupId, order.latitude, order.longitude);
+      } catch (locErr) { }
+    }
+    return true;
+  } catch (e) {
+    console.error("GROUP SEND ERROR:", e.message);
+    return false;
   }
 }
 
-// === Обработчик изменения процента комиссии в Super Panel ===
-bot.hears(/^\/foiz_(\d+)/, async (ctx) => {
-  const match = ctx.message.text.match(/^\/foiz_(\d+)/);
-  if (!match) return;
-  
-  const cafeId = parseInt(match[1]);
-  const u = getUser(ctx.from.id);
-  
-  // Проверим что это Supar admin
-  db.get(`SELECT * FROM cafes WHERE id = ? AND admin_login`, [cafeId], (err, cafe) => {
-    if (err || !cafe || cafe.tariff_type !== 'commission') {
-      return ctx.reply("❌ Bu cafe komissiya tizimida emas yoki topilmadi");
-    }
-    
-    u.selectedCafeId = cafeId;
-    u.step = "edit_commission_percent";
-    
-    ctx.reply(`📝 ${cafe.name} uchun yangi foizni kiriting (hozirgi: ${cafe.commission_percent || 0}%)\n0-100 oralig'ida:`, Markup.keyboard([["⬅️ Orqaga"]]).resize());
-  });
-});
-
-// Обработчик ввода нового процента
-bot.use(async (ctx, next) => {
-  const u = getUser(ctx.from.id);
-  
-  if (u.step === "edit_commission_percent" && ctx.message?.text) {
-    const text = ctx.message.text;
-    
-    if (text === "⬅️ Orqaga") {
-      u.step = "super";
-      u.selectedCafeId = null;
-      return ctx.reply("📋 Cafelar menyusiga qaytdingiz", superMenu());
-    }
-    
-    const newPercent = parseInt(text);
-    
-    if (isNaN(newPercent) || newPercent < 0 || newPercent > 100) {
-      return ctx.reply("❌ Noto'g'ri! Foiz 0-100 oralig'ida bo'lishi kerak.");
-    }
-    
-    updateCommissionPercent(u.selectedCafeId, newPercent, (success, message) => {
-      if (success) {
-        u.step = "super";
-        u.selectedCafeId = null;
-        ctx.reply(message, superMenu());
-      } else {
-        ctx.reply("❌ " + message);
-      }
-    });
-    
-    return;
-  }
-  
-  return next();
-});
-
 if (require.main === module) {
   bot.launch();
-  console.log("RUNNING...");
 }
 
 module.exports = { bot };
 
 bot.catch((err, ctx) => {
-  console.log("❌ GLOBAL BOT ERROR:", err);
+  console.error("❌ GLOBAL BOT ERROR:", err);
   if (ctx) {
     ctx.reply("⚠️ Xatolik yuz berdi, qayta urinib ko‘ring.");
   }

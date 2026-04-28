@@ -1,8 +1,7 @@
 const sqlite3 = require("sqlite3").verbose();
 
 const db = new sqlite3.Database("./database.sqlite", (err) => {
-  if (err) console.log("DB xato:", err);
-  else console.log("DB ulandi");
+  if (err) console.error("DB xato:", err);
 });
 
 db.serialize(() => {
@@ -35,6 +34,11 @@ db.serialize(() => {
 
   db.run(
     `ALTER TABLE cafes ADD COLUMN table_count INTEGER DEFAULT 0`,
+    () => {},
+  );
+
+  db.run(
+    `ALTER TABLE cafes ADD COLUMN type TEXT DEFAULT 'cafe'`,
     () => {},
   );
 
@@ -72,10 +76,19 @@ db.serialize(() => {
     )
   `);
 
+  db.run(`
+    CREATE TABLE IF NOT EXISTS users (
+      telegram_id TEXT PRIMARY KEY,
+      username TEXT,
+      first_name TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+
 
 
   db.all(`PRAGMA table_info(couriers)`, [], (err, rows) => {
-    if (err) return console.log("PRAGMA xato:", err);
+    if (err) return console.error("PRAGMA xato:", err);
 
     const hasTelegramId = rows.some((col) => col.name === "telegram_id");
     const hasLogin = rows.some((col) => col.name === "login");
@@ -96,14 +109,12 @@ db.serialize(() => {
       db.run(`ALTER TABLE couriers ADD COLUMN is_online INTEGER DEFAULT 0`, () => {});
     }
     if (!hasTransportType) {
-      db.run(`ALTER TABLE couriers ADD COLUMN transport_type TEXT DEFAULT 'auto'`, () => {
-        console.log("couriers.transport_type qo'shildi");
-      });
+      db.run(`ALTER TABLE couriers ADD COLUMN transport_type TEXT DEFAULT 'auto'`, () => {});
     }
   });
 
   db.all(`PRAGMA table_info(cafes)`, [], (err, rows) => {
-    if (err) return console.log("PRAGMA xato cafes:", err);
+    if (err) return console.error("PRAGMA xato cafes:", err);
 
     const checkCol = (colName, def) => {
       if (!rows.some((col) => col.name === colName)) {
@@ -125,7 +136,7 @@ db.serialize(() => {
   });
 
   db.all(`PRAGMA table_info(orders)`, [], (err, rows) => {
-    if (err) return console.log("PRAGMA xato:", err);
+    if (err) return console.error("PRAGMA xato:", err);
 
     const hasGroupMainMsgId = rows.some((col) => col.name === "group_main_msg_id");
     const hasMessagesJson = rows.some((col) => col.name === "messages_json");
@@ -149,22 +160,16 @@ db.serialize(() => {
   });
 
   db.all(`PRAGMA table_info(products)`, [], (err, rows) => {
-    if (err) return console.log("PRAGMA xato products:", err);
+    if (err) return console.error("PRAGMA xato products:", err);
 
     const hasSubcategory = rows.some((col) => col.name === "subcategory");
     const hasVariants = rows.some((col) => col.name === "variants");
 
     if (!hasSubcategory) {
-      db.run(`ALTER TABLE products ADD COLUMN subcategory TEXT`, (err) => {
-        if (!err) {
-          console.log("products.subcategory qo'shildi");
-        }
-      });
+      db.run(`ALTER TABLE products ADD COLUMN subcategory TEXT`, () => {});
     }
     if (!hasVariants) {
-      db.run(`ALTER TABLE products ADD COLUMN variants TEXT`, (err) => {
-        if (!err) console.log("products.variants qo'shildi");
-      });
+      db.run(`ALTER TABLE products ADD COLUMN variants TEXT`, () => {});
     }
 
     const checkCol = (colName, def) => {
@@ -173,14 +178,13 @@ db.serialize(() => {
       }
     };
     checkCol("discount", "INTEGER DEFAULT 0");
+    checkCol("discount_percent", "INTEGER DEFAULT 0");
     checkCol("bestseller", "INTEGER DEFAULT 0");
 
     // REMOVED: was incorrectly overwriting valid categories (Milliy taomlar, Desert, Ichimliklar, Aksiya) to 'Boshqalar'
 
     // One-time fix: clear default 'Boshqalar' subcategory that was auto-assigned
-    db.run(`UPDATE products SET subcategory = NULL WHERE subcategory = 'Boshqalar'`, (err) => {
-      if (!err) console.log("products.subcategory 'Boshqalar' -> NULL to'zalandi");
-    });
+    db.run(`UPDATE products SET subcategory = NULL WHERE subcategory = 'Boshqalar'`, () => {});
   });
 
 
