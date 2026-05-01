@@ -121,6 +121,12 @@ db.serialize(() => {
         db.run(`ALTER TABLE cafes ADD COLUMN ${colName} ${def}`, () => {});
       }
     };
+    checkCol("open_time", "TEXT");
+    checkCol("close_time", "TEXT");
+    checkCol("working_hours_mode", "TEXT DEFAULT 'custom'");
+    checkCol("is_open", "INTEGER DEFAULT 1");
+    checkCol("manual_open_override", "INTEGER DEFAULT 0");
+    checkCol("manual_closed", "INTEGER DEFAULT 0");
     checkCol("is_visible", "INTEGER DEFAULT 1");
     checkCol("card_name", "TEXT");
     checkCol("card_number", "TEXT");

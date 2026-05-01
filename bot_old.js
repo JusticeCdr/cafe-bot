@@ -214,7 +214,7 @@ function getCafeStatus(cafe) {
   }
 
   // Check if open
-  if (cafe.is_open !== 1) {
+  if (!getCafeEffectiveOpenStatus(cafe).isOpen) {
     return {
       status: 'closed',
       message: '🔴 Cafe yopiq',
@@ -693,6 +693,7 @@ function cafePanelMenu() {
 // Генерирует меню панели кафе динамически на основе типа тарифа
 function generateCafePanelMenu(cafe) {
   if (!cafe) return cafePanelMenu();
+  const openStatus = getCafeEffectiveOpenStatus(cafe);
 
   const rows = [
     ["➕ Mahsulot qo'shish", "📦 Mahsulotlar"],
@@ -709,8 +710,12 @@ function generateCafePanelMenu(cafe) {
     rows.push(["📅 Aboniment"]);
   }
 
-  rows.push(["✅ Ochildik"]);
-  rows.push(["❌ Yopildik", "🏠 Menu"]);
+  if (openStatus.isOpen) {
+    rows.push(["❌ Cafe yopish"]);
+  } else {
+    rows.push(["✅ Cafe ochish"]);
+  }
+  rows.push(["🏠 Menu"]);
 
   return Markup.keyboard(rows).resize();
 }
@@ -729,6 +734,10 @@ function simpleBackMenu() {
 
 function noteMenu() {
   return Markup.keyboard([["Yo'q"], ["⬅️ Orqaga"]]).resize();
+}
+
+function cardQrMenu() {
+  return Markup.keyboard([["⏭ O‘tkazib yuborish"], ["⬅️ Orqaga"]]).resize();
 }
 
 function contactMenu() {
@@ -792,6 +801,98 @@ function orderTypeMenu() {
   ]).resize();
 }
 
+function hasCafeCreationDraft(u) {
+  try {
+    return !!(
+      u &&
+      u.temp &&
+      typeof u.temp === "object" &&
+      u.temp.name &&
+      u.temp.admin_login &&
+      Object.prototype.hasOwnProperty.call(u.temp, "bank_name")
+    );
+  } catch (e) {
+    console.error("hasCafeCreationDraft error:", e.message);
+    return false;
+  }
+}
+
+function returnToSuperPanelMissingDraft(ctx, u) {
+  try {
+    u.step = "super";
+    u.temp = {};
+    return ctx.reply("❌ Ma’lumot topilmadi, qaytadan urinib ko‘ring", superMenu());
+  } catch (e) {
+    console.error("returnToSuperPanelMissingDraft error:", e.message);
+  }
+}
+
+function askTariffType(ctx, u) {
+  try {
+    u.step = "tariff_type";
+    return ctx.reply(
+      "To'lov tizimini tanlang:",
+      Markup.keyboard([["💸 Foizli", "📅 30 kun aboniment"], ["⬅️ Orqaga"]]).resize(),
+    );
+  } catch (e) {
+    console.error("askTariffType error:", e.message);
+  }
+}
+
+function editCafeFieldsMenu() {
+  return Markup.keyboard([
+    ["Nomi", "Telefon"],
+    ["Tavsif", "Lokatsiya matni"],
+    ["Instagram", "Menu link"],
+    ["Ish vaqti", "Order group ID"],
+    ["Delivery narxi"],
+    ["Tarif turi"],
+    ["Komissiya foizi", "Balans"],
+    ["Aboniment sanasi"],
+    ["Karta egasi", "Karta raqami"],
+    ["Bank nomi", "Karta QR"],
+    ["🖼 QR rasmni o‘zgartirish"],
+    ["Rasm", "🗑 O'chirish"],
+    ["⬅️ Orqaga"],
+  ]).resize();
+}
+
+function returnToEditCafeFields(ctx, u, message = "Nimani o‘zgartirmoqchisiz?") {
+  try {
+    if (!u?.temp?.editCafeId) {
+      u.step = "super";
+      u.temp = {};
+      return ctx.reply("❌ Ma’lumot topilmadi, qaytadan urinib ko‘ring", superMenu());
+    }
+    u.step = "edit_field";
+    return ctx.reply(message, editCafeFieldsMenu());
+  } catch (e) {
+    console.error("returnToEditCafeFields error:", e.message);
+  }
+}
+
+function returnToSuperPanelLostEditSession(ctx, u) {
+  try {
+    u.step = "super";
+    u.temp = {};
+    return ctx.reply("❌ Ma’lumot topilmadi, qaytadan urinib ko‘ring", superMenu());
+  } catch (e) {
+    console.error("returnToSuperPanelLostEditSession error:", e.message);
+  }
+}
+
+function beginEditCardQrPhoto(ctx, u) {
+  try {
+    if (!u?.temp?.editCafeId) return returnToSuperPanelLostEditSession(ctx, u);
+    u.temp.editField = "card_qr_photo";
+    u.step = "edit_card_qr_photo";
+    return ctx.reply("Yangi QR rasmni yuboring", simpleBackMenu());
+  } catch (e) {
+    console.error("beginEditCardQrPhoto error:", e.message);
+    return returnToSuperPanelLostEditSession(ctx, u);
+  }
+}
+
 function etaButtons(orderId) {
   return Markup.inlineKeyboard([
     [
@@ -853,6 +954,144 @@ function getOrderStatusButtons(order) {
   return rows.length ? Markup.inlineKeyboard(rows) : Markup.inlineKeyboard([]);
 }
 
+const WORK_TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function isValidWorkingTime(value) {
+  return WORK_TIME_RE.test(String(value || "").trim());
+}
+
+function timeToMinutes(value) {
+  if (!isValidWorkingTime(value)) return null;
+  const [h, m] = String(value).trim().split(":").map(Number);
+  return h * 60 + m;
+}
+
+function getTashkentMinutes() {
+  try {
+    const parts = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Tashkent",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }).formatToParts(new Date());
+
+    const hour = Number(parts.find((p) => p.type === "hour")?.value);
+    const minute = Number(parts.find((p) => p.type === "minute")?.value);
+    if (Number.isFinite(hour) && Number.isFinite(minute)) return hour * 60 + minute;
+  } catch (e) {
+    console.error("Tashkent time parse error:", e.message);
+  }
+
+  const fallback = new Date(Date.now() + 5 * 60 * 60 * 1000);
+  return fallback.getUTCHours() * 60 + fallback.getUTCMinutes();
+}
+
+function isWithinWorkingHours(nowMinutes, openMinutes, closeMinutes) {
+  if (openMinutes === null || closeMinutes === null) return null;
+  if (openMinutes === closeMinutes) return true;
+  if (openMinutes < closeMinutes) {
+    return nowMinutes >= openMinutes && nowMinutes < closeMinutes;
+  }
+  return nowMinutes >= openMinutes || nowMinutes < closeMinutes;
+}
+
+function getScheduledOpenNow(openTime, closeTime) {
+  try {
+    const openMinutes = timeToMinutes(openTime);
+    const closeMinutes = timeToMinutes(closeTime);
+    const inWorkingHours = isWithinWorkingHours(getTashkentMinutes(), openMinutes, closeMinutes);
+    return inWorkingHours === null ? null : inWorkingHours;
+  } catch (e) {
+    console.error("getScheduledOpenNow error:", e.message);
+    return null;
+  }
+}
+
+function getCafeScheduleText(cafe) {
+  if (String(cafe?.working_hours_mode || "custom") === "24_7") return "24/7 ishlaydi";
+  return `${cafe?.open_time || "-"} - ${cafe?.close_time || "-"}`;
+}
+
+function resetManualOverrideIfNeeded(cafe, nowMinutes, closeMinutes) {
+  try {
+    if (!cafe?.id) return false;
+    if (Number(cafe.manual_open_override) !== 1) return false;
+    if (String(cafe.working_hours_mode || "custom") === "24_7") return false;
+    if (closeMinutes === null || nowMinutes !== closeMinutes) return false;
+
+    db.run(
+      `UPDATE cafes SET manual_open_override = 0, is_open = 0 WHERE id = ? AND manual_open_override = 1`,
+      [cafe.id],
+      (err) => {
+        if (err) console.error("manual_open_override reset error:", err.message);
+      },
+    );
+    return true;
+  } catch (e) {
+    console.error("manual_open_override reset failed:", e.message);
+    return false;
+  }
+}
+
+function getCafeEffectiveOpenStatus(cafe) {
+  try {
+    if (!cafe) {
+      return { isOpen: false, canShow: false, reason: "not_found", scheduleText: "-" };
+    }
+
+    const scheduleText = getCafeScheduleText(cafe);
+
+    if (Number(cafe.manual_frozen) === 1) {
+      return { isOpen: false, canShow: false, reason: "frozen", scheduleText };
+    }
+
+    if (Number(cafe.is_deleted) === 1 || Number(cafe.is_visible) === 0) {
+      return { isOpen: false, canShow: false, reason: "hidden", scheduleText };
+    }
+
+    const mode = String(cafe.working_hours_mode || "custom");
+
+    if (mode === "24_7") {
+      const isOpen = Number(cafe.manual_closed) !== 1 && Number(cafe.is_open) === 1;
+      return { isOpen, canShow: isOpen, reason: isOpen ? "open_24_7" : "manual_closed", scheduleText };
+    }
+
+    if (Number(cafe.manual_closed) === 1) {
+      return { isOpen: false, canShow: false, reason: "manual_closed", scheduleText };
+    }
+
+    const nowMinutes = getTashkentMinutes();
+    const openMinutes = timeToMinutes(cafe.open_time);
+    const closeMinutes = timeToMinutes(cafe.close_time);
+    const inWorkingHours = isWithinWorkingHours(nowMinutes, openMinutes, closeMinutes);
+
+    const overrideWasReset = resetManualOverrideIfNeeded(cafe, nowMinutes, closeMinutes);
+    if (overrideWasReset) {
+      return { isOpen: false, canShow: false, reason: "manual_override_closed_at_close_time", scheduleText };
+    }
+
+    if (Number(cafe.manual_open_override) === 1) {
+      return { isOpen: true, canShow: true, reason: "manual_open_override", scheduleText };
+    }
+
+    if (inWorkingHours === null) {
+      const isOpen = Number(cafe.is_open) === 1;
+      return { isOpen, canShow: isOpen, reason: isOpen ? "fallback_open" : "invalid_hours", scheduleText };
+    }
+
+    return {
+      isOpen: inWorkingHours,
+      canShow: inWorkingHours,
+      reason: inWorkingHours ? "scheduled_open" : "scheduled_closed",
+      scheduleText,
+    };
+  } catch (e) {
+    console.error("getCafeEffectiveOpenStatus error:", e.message);
+    const isOpen = Number(cafe?.is_open) === 1 && Number(cafe?.manual_closed) !== 1;
+    return { isOpen, canShow: isOpen, reason: "fallback", scheduleText: getCafeScheduleText(cafe) };
+  }
+}
+
 function safeUsername(ctx) {
   return ctx.from.username
     ? `@${ctx.from.username}`
@@ -877,7 +1116,7 @@ function formatCart(cart) {
 }
 
 function isCafeOpenByTime(cafe) {
-  return Number(cafe.is_open) === 1;
+  return getCafeEffectiveOpenStatus(cafe).isOpen;
 }
 
 function isCafeFrozen(cafe) {
@@ -908,6 +1147,11 @@ function showProducts(ctx, cafeId, category, subcategory) {
   db.get(`SELECT * FROM cafes WHERE id = ?`, [cafeId], (err, cafe) => {
     if (err || !cafe) return ctx.reply("Cafe topilmadi.");
     if (isCafeFrozen(cafe)) return showFrozenMessage(ctx);
+    const openStatus = getCafeEffectiveOpenStatus(cafe);
+    if (openStatus.reason === "hidden") return ctx.reply("Cafe topilmadi.", simpleBackMenu());
+    if (!openStatus.isOpen) {
+      return ctx.reply(`Hozir cafe yopiq. Ish vaqti: ${openStatus.scheduleText}`, simpleBackMenu());
+    }
 
     let query = `SELECT * FROM products WHERE cafe_id = ? AND category = ? AND available = 1`;
     let params = [cafeId, category];
@@ -1457,6 +1701,29 @@ bot.use(async (ctx, next) => {
   if (ctx.chat?.type !== "private") return next();
   const u = getUser(ctx.from.id);
 
+  if (u.step === "card_qr_id" && ctx.message) {
+    try {
+      const skipText = "⏭ O‘tkazib yuborish";
+      if (ctx.message.text === "⬅️ Orqaga") return goBack(ctx, u);
+      if (ctx.message.photo || ctx.message.text === skipText) return next();
+      return ctx.reply("QR uchun rasm yuboring yoki o‘tkazib yuboring", cardQrMenu());
+    } catch (e) {
+      console.error("card_qr_id middleware error:", e.message);
+      return ctx.reply("QR uchun rasm yuboring yoki o‘tkazib yuboring", cardQrMenu());
+    }
+  }
+
+  if (u.step === "edit_card_qr_photo" && ctx.message) {
+    try {
+      if (ctx.message.text === "⬅️ Orqaga") return returnToEditCafeFields(ctx, u);
+      if (ctx.message.photo) return next();
+      return ctx.reply("QR uchun rasm yuboring yoki orqaga qayting", simpleBackMenu());
+    } catch (e) {
+      console.error("edit_card_qr_photo middleware error:", e.message);
+      return ctx.reply("QR uchun rasm yuboring yoki orqaga qayting", simpleBackMenu());
+    }
+  }
+
   if (u.step === "payment_photo" && ctx.message) {
     if (!ctx.message.photo && !ctx.message.document && ctx.message.text !== "⬅️ Orqaga") {
       return ctx.reply("❌ Faqat chek rasmini yoki file yuboring.");
@@ -1568,8 +1835,11 @@ bot.on("location", (ctx) => {
   if (u.step === "location") {
     u.temp.latitude = ctx.message.location.latitude;
     u.temp.longitude = ctx.message.location.longitude;
-    u.step = "open_time";
-    return ctx.reply("Ochilish vaqti. Masalan: 08:00", simpleBackMenu());
+    u.step = "working_hours_mode";
+    return ctx.reply(
+      "Ish vaqtini tanlang:",
+      Markup.keyboard([["24/7", "⏰ Maxsus vaqt"], ["⬅️ Orqaga"]]).resize(),
+    );
   }
 
   if (u.step === "order_location") {
@@ -1594,7 +1864,53 @@ bot.on("document", (ctx) => {
 bot.on("photo", (ctx) => {
   if (ctx.chat?.type !== "private") return;
   const u = getUser(ctx.from.id);
-  const fileId = ctx.message.photo[ctx.message.photo.length - 1].file_id;
+  const photoList = Array.isArray(ctx.message?.photo) ? ctx.message.photo : [];
+  const fileId = photoList.length ? photoList[photoList.length - 1]?.file_id : null;
+
+  if (u.step === "card_qr_id") {
+    try {
+      if (!hasCafeCreationDraft(u)) return returnToSuperPanelMissingDraft(ctx, u);
+      if (!fileId) return ctx.reply("QR uchun rasm yuboring yoki o‘tkazib yuboring", cardQrMenu());
+
+      u.temp.card_qr_id = fileId;
+      return askTariffType(ctx, u);
+    } catch (e) {
+      console.error("card_qr_id photo error:", e.message);
+      return ctx.reply("QR uchun rasm yuboring yoki o‘tkazib yuboring", cardQrMenu());
+    }
+  }
+
+  if (u.step === "edit_card_qr_photo") {
+    try {
+      const id = Number(u?.temp?.editCafeId);
+      if (!id) return returnToSuperPanelLostEditSession(ctx, u);
+      if (!fileId) return ctx.reply("QR uchun rasm yuboring yoki orqaga qayting", simpleBackMenu());
+
+      return db.run(
+        `UPDATE cafes SET card_qr_id = ? WHERE id = ?`,
+        [fileId, id],
+        function (err) {
+          try {
+            if (err) {
+              console.error("edit_card_qr_photo db error:", err.message);
+              return ctx.reply("Xatolik ❌", simpleBackMenu());
+            }
+            if (!this || this.changes === 0) {
+              u.step = "super";
+              u.temp = {};
+              return ctx.reply("❌ Cafe topilmadi", superMenu());
+            }
+            return returnToEditCafeFields(ctx, u, "✅ QR rasm yangilandi");
+          } catch (e) {
+            console.error("edit_card_qr_photo callback error:", e.message);
+          }
+        },
+      );
+    } catch (e) {
+      console.error("edit_card_qr_photo error:", e.message);
+      return ctx.reply("QR uchun rasm yuboring yoki orqaga qayting", simpleBackMenu());
+    }
+  }
 
   if (u.step === "edit_value_image") {
     const id = u.temp.editCafeId;
@@ -1640,8 +1956,8 @@ bot.on("photo", (ctx) => {
     const paidUntilValue = u.temp.tariff_type === 'commission' ? null : paidUntil.toISOString();
 
     db.run(
-      `INSERT INTO cafes (name, about, phone, instagram, menu_url, location_text, latitude, longitude, image_file_id, open_time, close_time, admin_login, admin_password, order_group_id, delivery_price, paid_until, card_name, card_number, bank_name, card_qr_id, type, tariff_type, commission_percent, balance, owner_telegram_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO cafes (name, about, phone, instagram, menu_url, location_text, latitude, longitude, image_file_id, open_time, close_time, working_hours_mode, is_open, manual_open_override, manual_closed, admin_login, admin_password, order_group_id, delivery_price, paid_until, card_name, card_number, bank_name, card_qr_id, type, tariff_type, commission_percent, balance, owner_telegram_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         u.temp.name,
         u.temp.about,
@@ -1654,6 +1970,10 @@ bot.on("photo", (ctx) => {
         fileId,
         u.temp.open_time,
         u.temp.close_time,
+        u.temp.working_hours_mode || 'custom',
+        Number(u.temp.is_open ?? 1),
+        Number(u.temp.manual_open_override || 0),
+        Number(u.temp.manual_closed || 0),
         u.temp.admin_login,
         u.temp.admin_password,
         u.temp.order_group_id,
@@ -1716,6 +2036,19 @@ bot.on("photo", (ctx) => {
 });
 
 // CALLBACKS
+bot.action(/^(edit_card_qr|edit_card_qr_photo)$/, async (ctx) => {
+  try {
+    await safeAnswerCbQuery(ctx);
+    const u = getUser(ctx.from.id);
+    return beginEditCardQrPhoto(ctx, u);
+  } catch (e) {
+    console.error("edit_card_qr_photo action error:", e.message);
+    try {
+      await safeAnswerCbQuery(ctx, "Xatolik");
+    } catch (err) { }
+  }
+});
+
 bot.action(/accept_(\d+)/, async (ctx) => {
   if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
   const orderId = Number(ctx.match[1]);
@@ -2667,11 +3000,12 @@ bot.on("text", (ctx) => {
     const isRest = text === "🍽 Restoranlar";
     const typeQuery = isRest ? "restaurant" : "cafe";
 
-    db.all(`SELECT * FROM cafes WHERE type = ? AND is_visible = 1 AND is_open = 1 AND manual_frozen = 0 AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY name ASC`, [typeQuery], (err, rows) => {
+    db.all(`SELECT * FROM cafes WHERE type = ? AND is_visible = 1 AND manual_frozen = 0 AND (is_deleted = 0 OR is_deleted IS NULL) ORDER BY name ASC`, [typeQuery], (err, rows) => {
       if (err) return ctx.reply("Xatolik bo‘ldi.");
 
       const activeCafes = rows.filter(c => {
-        if (!isCafeOpenByTime(c)) return false;
+        const status = getCafeEffectiveOpenStatus(c);
+        if (!status.canShow || !status.isOpen) return false;
         if (isCafeFrozen(c)) return false;
         return true;
       });
@@ -3391,20 +3725,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
 
       ctx.reply(
         "Nimani o‘zgartirmoqchisiz?",
-        Markup.keyboard([
-          ["Nomi", "Telefon"],
-          ["Tavsif", "Lokatsiya matni"],
-          ["Instagram", "Menu link"],
-          ["Ish vaqti", "Order group ID"],
-          ["Delivery narxi"],
-          ["Tarif turi"],
-          ["Komissiya foizi", "Balans"],
-          ["Aboniment sanasi"],
-          ["Karta egasi", "Karta raqami"],
-          ["Bank nomi", "Karta QR"],
-          ["Rasm", "🗑 O'chirish"],
-          ["⬅️ Orqaga"],
-        ]).resize(),
+        editCafeFieldsMenu(),
       );
     });
 
@@ -3430,6 +3751,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       "Karta raqami": "card_number",
       "Bank nomi": "bank_name",
       "Karta QR": "card_qr_id",
+      "🖼 QR rasmni o‘zgartirish": "card_qr_photo",
       "Rasm": "image_file_id",
       "🗑 O'chirish": "delete"
     };
@@ -3456,6 +3778,10 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       return ctx.reply("Yangi rasmni yuboring:");
     }
 
+    if (u.temp.editField === "card_qr_photo") {
+      return beginEditCardQrPhoto(ctx, u);
+    }
+
     if (u.temp.editField === "tariff_type") {
       return ctx.reply(
         "Tarif turini tanlang:",
@@ -3464,7 +3790,15 @@ Ishlab topildi: ${stats.totalSum} so'm`;
     }
 
     if (u.temp.editField === "work_time") {
-      return ctx.reply("Yangi vaqt kiriting:\nMasalan: 09:00-23:00");
+      u.step = "edit_working_hours_mode";
+      return ctx.reply(
+        "Ish vaqtini tanlang:",
+        Markup.keyboard([
+          ["🕛 24/7 ishlaydi"],
+          ["⏰ Ish vaqtini belgilash"],
+          ["⬅️ Orqaga"],
+        ]).resize(),
+      );
     }
 
     if (u.temp.editField === "paid_until") {
@@ -3488,16 +3822,27 @@ Ishlab topildi: ${stats.totalSum} so'm`;
       if (parts.length !== 2) return ctx.reply("❌ Noto‘g‘ri format. Masalan: 09:00-23:00");
       const open = parts[0].trim();
       const close = parts[1].trim();
-      if (!open || !close) return ctx.reply("❌ Noto‘g‘ri format. Masalan: 09:00-23:00");
+      if (!isValidWorkingTime(open) || !isValidWorkingTime(close)) {
+        return ctx.reply("❌ Noto‘g‘ri vaqt. Masalan: 09:00-23:00");
+      }
+      const scheduledOpen = getScheduledOpenNow(open, close);
+      const isOpen = scheduledOpen === null ? 1 : (scheduledOpen ? 1 : 0);
 
       return db.run(
-        `UPDATE cafes SET open_time = ?, close_time = ? WHERE id = ?`,
-        [open, close, id],
+        `UPDATE cafes
+         SET open_time = ?,
+             close_time = ?,
+             working_hours_mode = 'custom',
+             manual_open_override = 0,
+             manual_closed = 0,
+             is_open = ?
+         WHERE id = ?`,
+        [open, close, isOpen, id],
         (err) => {
           if (err) return ctx.reply("Xatolik ❌");
           u.step = "super";
           u.temp = {};
-          ctx.reply("✅ Yangilandi", superMenu());
+          ctx.reply(`✅ Ish vaqti yangilandi: ${open} - ${close}`, superMenu());
         },
       );
     }
@@ -3584,6 +3929,96 @@ Ishlab topildi: ${stats.totalSum} so'm`;
     });
 
     return;
+  }
+
+  if (u.step === "edit_working_hours_mode") {
+    const id = u.temp.editCafeId;
+    if (!id) {
+      u.step = "super";
+      u.temp = {};
+      return ctx.reply("Cafe topilmadi ❌", superMenu());
+    }
+
+    if (text === "🕛 24/7 ishlaydi") {
+      return db.run(
+        `UPDATE cafes
+         SET working_hours_mode = '24_7',
+             is_open = 1,
+             open_time = NULL,
+             close_time = NULL,
+             manual_open_override = 0,
+             manual_closed = 0
+         WHERE id = ?`,
+        [id],
+        (err) => {
+          if (err) return ctx.reply("Xatolik ❌");
+          u.step = "super";
+          u.temp = {};
+          ctx.reply("✅ Ish vaqti 24/7 qilib o‘rnatildi", superMenu());
+        },
+      );
+    }
+
+    if (text === "⏰ Ish vaqtini belgilash") {
+      u.step = "edit_working_open_time";
+      return ctx.reply("Ochilish vaqtini kiriting. Masalan: 09:00", simpleBackMenu());
+    }
+
+    return ctx.reply(
+      "Tugmadan tanlang.",
+      Markup.keyboard([
+        ["🕛 24/7 ishlaydi"],
+        ["⏰ Ish vaqtini belgilash"],
+        ["⬅️ Orqaga"],
+      ]).resize(),
+    );
+  }
+
+  if (u.step === "edit_working_open_time") {
+    const openTime = String(text || "").trim();
+    if (!isValidWorkingTime(openTime)) {
+      return ctx.reply("Noto'g'ri vaqt. HH:MM formatida kiriting. Masalan: 09:00");
+    }
+    u.temp.editOpenTime = openTime;
+    u.step = "edit_working_close_time";
+    return ctx.reply("Yopilish vaqtini kiriting. Masalan: 23:00", simpleBackMenu());
+  }
+
+  if (u.step === "edit_working_close_time") {
+    const id = u.temp.editCafeId;
+    const openTime = u.temp.editOpenTime;
+    const closeTime = String(text || "").trim();
+
+    if (!id || !isValidWorkingTime(openTime)) {
+      u.step = "super";
+      u.temp = {};
+      return ctx.reply("Cafe topilmadi yoki vaqt noto'g'ri ❌", superMenu());
+    }
+
+    if (!isValidWorkingTime(closeTime)) {
+      return ctx.reply("Noto'g'ri vaqt. HH:MM formatida kiriting. Masalan: 23:00");
+    }
+
+    const scheduledOpen = getScheduledOpenNow(openTime, closeTime);
+    const isOpen = scheduledOpen === null ? 1 : (scheduledOpen ? 1 : 0);
+
+    return db.run(
+      `UPDATE cafes
+       SET working_hours_mode = 'custom',
+           open_time = ?,
+           close_time = ?,
+           manual_open_override = 0,
+           manual_closed = 0,
+           is_open = ?
+       WHERE id = ?`,
+      [openTime, closeTime, isOpen, id],
+      (err) => {
+        if (err) return ctx.reply("Xatolik ❌");
+        u.step = "super";
+        u.temp = {};
+        ctx.reply(`✅ Ish vaqti yangilandi: ${openTime} - ${closeTime}`, superMenu());
+      },
+    );
   }
 
   // super login
@@ -3755,7 +4190,7 @@ ${formatDate(cafe.paid_until)}`;
           status = "❄️ Balans tugagan";
         } else if (c.tariff_type !== 'commission' && c.paid_until && new Date(c.paid_until) < new Date()) {
           status = "⏳ Muddati tugagan";
-        } else if (Number(c.is_open) === 1) {
+        } else if (getCafeEffectiveOpenStatus(c).isOpen) {
           status = "✅ Faol";
         } else {
           status = "❌ Yopiq";
@@ -3776,8 +4211,7 @@ ${formatDate(cafe.paid_until)}`;
 
         msg += c.id + ". " + c.name + "\n";
         msg += "📞 " + (c.phone || "-") + "\n";
-        msg +=
-          "⏰ " + (c.open_time || "-") + " - " + (c.close_time || "-") + "\n";
+        msg += "⏰ " + getCafeScheduleText(c) + "\n";
         msg += "📌 Holat: " + status + "\n";
         msg += tariffInfo + "\n\n";
       }
@@ -3862,14 +4296,46 @@ ${formatDate(cafe.paid_until)}`;
     );
   }
 
+  if (u.step === "working_hours_mode") {
+    if (text === "24/7") {
+      u.temp.working_hours_mode = "24_7";
+      u.temp.open_time = null;
+      u.temp.close_time = null;
+      u.temp.is_open = 1;
+      u.temp.manual_open_override = 0;
+      u.temp.manual_closed = 0;
+      u.step = "admin_login";
+      return ctx.reply("Cafe panel login:", simpleBackMenu());
+    }
+
+    if (text === "⏰ Maxsus vaqt") {
+      u.temp.working_hours_mode = "custom";
+      u.step = "open_time";
+      return ctx.reply("Ochilish vaqti. Masalan: 08:00", simpleBackMenu());
+    }
+
+    return ctx.reply("Tugmadan tanlang.");
+  }
+
   if (u.step === "open_time") {
-    u.temp.open_time = text;
+    const openTime = String(text || "").trim();
+    if (!isValidWorkingTime(openTime)) {
+      return ctx.reply("Noto'g'ri vaqt. HH:MM formatida kiriting. Masalan: 09:00");
+    }
+    u.temp.open_time = openTime;
     u.step = "close_time";
     return ctx.reply("Yopilish vaqti. Masalan: 23:00", simpleBackMenu());
   }
 
   if (u.step === "close_time") {
-    u.temp.close_time = text;
+    const closeTime = String(text || "").trim();
+    if (!isValidWorkingTime(closeTime)) {
+      return ctx.reply("Noto'g'ri vaqt. HH:MM formatida kiriting. Masalan: 23:00");
+    }
+    u.temp.close_time = closeTime;
+    u.temp.is_open = 1;
+    u.temp.manual_open_override = 0;
+    u.temp.manual_closed = 0;
     u.step = "admin_login";
     return ctx.reply("Cafe panel login:", simpleBackMenu());
   }
@@ -3913,13 +4379,21 @@ ${formatDate(cafe.paid_until)}`;
   if (u.step === "bank_name") {
     u.temp.bank_name = text.toLowerCase() === "yoq" ? null : text;
     u.step = "card_qr_id";
-    return ctx.reply("QR karta rasmini yuboring (Telegram file_id yoki yoq):", simpleBackMenu());
+    return ctx.reply("QR karta rasmini yuboring:", cardQrMenu());
   }
 
   if (u.step === "card_qr_id") {
-    u.temp.card_qr_id = text.toLowerCase() === "yoq" ? null : text;
-    u.step = "tariff_type";
-    return ctx.reply("To'lov tizimini tanlang:", Markup.keyboard([["💸 Foizli", "📅 30 kun aboniment"], ["⬅️ Orqaga"]]).resize());
+    try {
+      if (!hasCafeCreationDraft(u)) return returnToSuperPanelMissingDraft(ctx, u);
+      if (text === "⏭ O‘tkazib yuborish") {
+        u.temp.card_qr_id = null;
+        return askTariffType(ctx, u);
+      }
+      return ctx.reply("QR uchun rasm yuboring yoki o‘tkazib yuboring", cardQrMenu());
+    } catch (e) {
+      console.error("card_qr_id text error:", e.message);
+      return ctx.reply("QR uchun rasm yuboring yoki o‘tkazib yuboring", cardQrMenu());
+    }
   }
 
   if (u.step === "tariff_type") {
@@ -3969,7 +4443,7 @@ ${formatDate(cafe.paid_until)}`;
   if (u.step === "freeze_id") {
     const id = Number(text);
     db.run(
-      `UPDATE cafes SET manual_frozen = 1, is_open = 0 WHERE id = ?`,
+      `UPDATE cafes SET manual_frozen = 1, is_open = 0, manual_closed = 1, manual_open_override = 0 WHERE id = ?`,
       [id],
       (err) => {
         if (err) return ctx.reply("Xatolik ❌");
@@ -3993,6 +4467,8 @@ ${formatDate(cafe.paid_until)}`;
       `UPDATE cafes
        SET manual_frozen = 0,
            is_open = 1,
+           manual_closed = 0,
+           manual_open_override = 0,
            activated_at = ?,
            paid_until = CASE WHEN tariff_type = 'commission' THEN NULL ELSE datetime( ? , '+30 days') END
        WHERE id = ?`,
@@ -4033,7 +4509,7 @@ ${formatDate(cafe.paid_until)}`;
       const newDate = baseDate.toISOString();
 
       db.run(
-        `UPDATE cafes SET paid_until = ?, manual_frozen = 0, is_open = 1 WHERE id = ?`,
+        `UPDATE cafes SET paid_until = ?, manual_frozen = 0, is_open = 1, manual_closed = 0, manual_open_override = 0 WHERE id = ?`,
         [newDate, id],
         (err2) => {
           if (err2) return ctx.reply("Xatolik ❌");
@@ -4323,9 +4799,13 @@ Parol: ${courierPassword}`;
   }
 
   // cafe ochiq/yopiq
-  if (text === "✅ Ochildik") {
+  if (text === "✅ Ochildik" || text === "✅ Cafe ochish") {
     db.run(
-      `UPDATE cafes SET is_open = 1 WHERE id = ?`,
+      `UPDATE cafes
+       SET manual_closed = 0,
+           is_open = 1,
+           manual_open_override = CASE WHEN working_hours_mode = '24_7' THEN 0 ELSE 1 END
+       WHERE id = ?`,
       [u.cafeAdminId],
       (err) => {
         if (err) return ctx.reply("Xatolik ❌");
@@ -4337,9 +4817,9 @@ Parol: ${courierPassword}`;
     return;
   }
 
-  if (text === "❌ Yopildik") {
+  if (text === "❌ Yopildik" || text === "❌ Cafe yopish") {
     db.run(
-      `UPDATE cafes SET is_open = 0 WHERE id = ?`,
+      `UPDATE cafes SET manual_closed = 1, is_open = 0, manual_open_override = 0 WHERE id = ?`,
       [u.cafeAdminId],
       (err) => {
         if (err) return ctx.reply("Xatolik ❌");
@@ -4433,16 +4913,28 @@ Parol: ${courierPassword}`;
 
     const open = parts[0].trim();
     const close = parts[1].trim();
+    if (!isValidWorkingTime(open) || !isValidWorkingTime(close)) {
+      return ctx.reply("Noto‘g‘ri vaqt.\nMasalan: 09:00-23:00");
+    }
+    const scheduledOpen = getScheduledOpenNow(open, close);
+    const isOpen = scheduledOpen === null ? 1 : (scheduledOpen ? 1 : 0);
 
     db.run(
-      `UPDATE cafes SET open_time = ?, close_time = ? WHERE id = ?`,
-      [open, close, u.cafeAdminId],
+      `UPDATE cafes
+       SET open_time = ?,
+           close_time = ?,
+           working_hours_mode = 'custom',
+           manual_open_override = 0,
+           manual_closed = 0,
+           is_open = ?
+       WHERE id = ?`,
+      [open, close, isOpen, u.cafeAdminId],
       (err) => {
         if (err) return ctx.reply("Xatolik ❌");
 
         u.step = "cafe";
         getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply("✅ Ish vaqti yangilandi", menu);
+          ctx.reply(`✅ Ish vaqti yangilandi: ${open} - ${close}`, menu);
         });
       },
     );
@@ -4454,15 +4946,14 @@ Parol: ${courierPassword}`;
   if (text === "🏪 Cafelar") {
     db.all(`SELECT * FROM cafes ORDER BY name ASC`, [], (err, rows) => {
       if (err) return ctx.reply("Xatolik bo‘ldi.");
-      if (!rows.length) return ctx.reply("Cafe yo‘q.");
+      const activeRows = (rows || []).filter((c) => {
+        const status = getCafeEffectiveOpenStatus(c);
+        return status.canShow && status.isOpen && !isCafeFrozen(c);
+      });
+      if (!activeRows.length) return ctx.reply("Cafe yo‘q.");
 
       pushNavHistory(u);
-      const buttons = rows.map((c) => {
-        const open = isCafeOpenByTime(c) && c.is_open;
-        const frozen = isCafeFrozen(c);
-        if (frozen) return [`❄️ ${c.name}`];
-        return [open ? c.name : `❌ ${c.name}`];
-      });
+      const buttons = activeRows.map((c) => [c.name]);
 
       buttons.push(["⬅️ Orqaga"]);
       ctx.reply("Tanlang:", Markup.keyboard(buttons).resize());
@@ -4493,14 +4984,13 @@ Parol: ${courierPassword}`;
       return showFrozenMessage(ctx);
     }
 
-    if (!cafe.is_open) {
+    const openStatus = getCafeEffectiveOpenStatus(cafe);
+    if (openStatus.reason === "hidden") {
+      return ctx.reply("Cafe topilmadi.", simpleBackMenu());
+    }
+    if (!openStatus.isOpen) {
       return ctx.reply(
-        `😔 ${cafe.name} hozir yopiq
-
-⏰ Ish vaqti:
-${cafe.open_time || "-"} — ${cafe.close_time || "-"}
-
-✨ Sizni shu vaqtda kutamiz`,
+        `Hozir cafe yopiq. Ish vaqti: ${openStatus.scheduleText}`,
         simpleBackMenu(),
       );
     }
@@ -4957,6 +5447,15 @@ function finalizeOrder(ctx, u) {
   const total = totalCart(u.cart);
   db.get(`SELECT * FROM cafes WHERE id = ?`, [u.selectedCafeId], (err, cafe) => {
     if (!cafe) return safeSendMessage(ctx.from.id, "Cafe topilmadi.");
+    const openStatus = getCafeEffectiveOpenStatus(cafe);
+    if (openStatus.reason === "hidden") {
+      u.step = "home";
+      return safeSendMessage(ctx.from.id, "Cafe topilmadi.", mainMenu());
+    }
+    if (!openStatus.isOpen) {
+      u.step = "inside_cafe";
+      return safeSendMessage(ctx.from.id, `Hozir cafe yopiq. Ish vaqti: ${openStatus.scheduleText}`, simpleBackMenu());
+    }
 
     const deliveryPrice = u.orderDraft.order_type === "🚚 Yetkazib berish" ? Number(cafe.delivery_price || 0) : 0;
     const grandTotal = total + deliveryPrice;
@@ -5019,6 +5518,26 @@ function finalizeOrder(ctx, u) {
     );
   });
 }
+
+function runWorkingHoursAutoClose() {
+  try {
+    db.all(
+      `SELECT * FROM cafes WHERE manual_open_override = 1 AND (working_hours_mode IS NULL OR working_hours_mode != '24_7')`,
+      [],
+      (err, rows) => {
+        if (err) return console.error("working hours auto close load error:", err.message);
+        (rows || []).forEach((cafe) => getCafeEffectiveOpenStatus(cafe));
+      },
+    );
+  } catch (e) {
+    console.error("working hours auto close error:", e.message);
+  }
+}
+
+const workingHoursTimer = setInterval(runWorkingHoursAutoClose, 60 * 1000);
+if (workingHoursTimer.unref) workingHoursTimer.unref();
+const workingHoursInitialTimer = setTimeout(runWorkingHoursAutoClose, 5000);
+if (workingHoursInitialTimer.unref) workingHoursInitialTimer.unref();
 
 async function sendVerificationToCafeGroup(order, cafe) {
   if (!cafe.order_group_id) return false;
@@ -5096,7 +5615,7 @@ if (require.main === module) {
   bot.launch();
 }
 
-module.exports = { bot };
+module.exports = { bot, getCafeEffectiveOpenStatus };
 
 bot.catch((err, ctx) => {
   console.error("❌ GLOBAL BOT ERROR:", err);
