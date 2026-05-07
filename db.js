@@ -139,6 +139,12 @@ db.serialize(() => {
     checkCol("balance", "INTEGER DEFAULT 0");                        // current balance in so'm
     checkCol("is_deleted", "INTEGER DEFAULT 0");                     // soft delete
     checkCol("owner_telegram_id", "TEXT");                           // owner's Telegram ID for notifications
+
+    // === CASHBACK/BONUS SYSTEM ===
+    checkCol("cashback_enabled", "INTEGER DEFAULT 0");
+    checkCol("cashback_percent", "INTEGER DEFAULT 3");
+    checkCol("max_bonus_use_percent", "INTEGER DEFAULT 30");
+    checkCol("min_order_for_cashback", "INTEGER DEFAULT 50000");
   });
 
   db.all(`PRAGMA table_info(orders)`, [], (err, rows) => {
@@ -163,6 +169,25 @@ db.serialize(() => {
     checkCol("payment_photo_id", "TEXT");
     checkCol("payment_status", "TEXT DEFAULT 'unpaid'");
     checkCol("commission_charged", "INTEGER DEFAULT 0"); // commission deducted from cafe balance
+
+    // === DELIVERY INFO ===
+    checkCol("delivery_distance_km", "REAL");
+    checkCol("latitude", "REAL");
+    checkCol("longitude", "REAL");
+
+    // === CASHBACK/BONUS SYSTEM ===
+    checkCol("bonus_used", "INTEGER DEFAULT 0");
+    checkCol("cash_amount", "INTEGER DEFAULT 0");
+    checkCol("online_amount", "INTEGER DEFAULT 0");
+    checkCol("final_total", "INTEGER DEFAULT 0");
+    checkCol("cashback_earned", "INTEGER DEFAULT 0");
+    checkCol("cashback_given", "INTEGER DEFAULT 0");
+    
+    // === CANCEL LOGIC ===
+    checkCol("canceled_at", "TEXT");
+    checkCol("canceled_by", "TEXT");
+    checkCol("cancel_reason", "TEXT");
+    checkCol("bonus_refunded", "INTEGER DEFAULT 0");
   });
 
   db.all(`PRAGMA table_info(products)`, [], (err, rows) => {
@@ -218,6 +243,218 @@ db.serialize(() => {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS customer_bonus (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id TEXT NOT NULL,
+      cafe_id INTEGER NOT NULL,
+      phone TEXT,
+      bonus_balance INTEGER DEFAULT 0,
+      total_spent INTEGER DEFAULT 0,
+      total_orders INTEGER DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_bonus_user_cafe ON customer_bonus(telegram_id, cafe_id)`);
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS bonus_transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      telegram_id TEXT NOT NULL,
+      cafe_id INTEGER NOT NULL,
+      order_id INTEGER,
+      type TEXT NOT NULL,
+      amount INTEGER NOT NULL,
+      balance_after INTEGER DEFAULT 0,
+      note TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
 });
+
+// === CASHBACK/BONUS SYSTEM HELPER FUNCTIONS ===
+
+db.getCustomerBonus = function(telegramId, cafeId) {
+  return new Promise((resolve) => {
+    try {
+      db.get(`SELECT * FROM customer_bonus WHERE telegram_id = ? AND cafe_id = ?`, [telegramId, cafeId], (err, row) => {
+        if (err) {
+          console.error("getCustomerBonus error:", err);
+          return resolve({ bonus_balance: 0 }); // safe fallback
+        }
+        if (row) {
+          return resolve(row);
+        }
+        // create new row if not exists
+        db.run(
+          `INSERT INTO customer_bonus (telegram_id, cafe_id, bonus_balance) VALUES (?, ?, 0)`, 
+          [telegramId, cafeId], 
+          function(insertErr) {
+            if (insertErr) {
+              console.error("getCustomerBonus insert error:", insertErr);
+              return resolve({ bonus_balance: 0 });
+            }
+            db.get(`SELECT * FROM customer_bonus WHERE id = ?`, [this.lastID], (err2, newRow) => {
+               if (err2) {
+                 console.error("getCustomerBonus get after insert error:", err2);
+                 return resolve({ bonus_balance: 0 });
+               }
+               resolve(newRow || { bonus_balance: 0 });
+            });
+        });
+      });
+    } catch (e) {
+      console.error("getCustomerBonus exception:", e);
+      resolve({ bonus_balance: 0 });
+    }
+  });
+};
+
+db.getBonusBalance = async function(telegramId, cafeId) {
+  try {
+    const row = await db.getCustomerBonus(telegramId, cafeId);
+    return row && row.bonus_balance ? row.bonus_balance : 0;
+  } catch (e) {
+    console.error("getBonusBalance error:", e);
+    return 0;
+  }
+};
+
+db.addBonus = function({ telegramId, cafeId, orderId, amount, type, note }) {
+  return new Promise(async (resolve) => {
+    try {
+      amount = parseInt(amount) || 0;
+      if (amount <= 0) return resolve(await db.getBonusBalance(telegramId, cafeId));
+      
+      const row = await db.getCustomerBonus(telegramId, cafeId);
+      const newBalance = (row.bonus_balance || 0) + amount;
+      
+      db.run(
+        `UPDATE customer_bonus SET bonus_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [newBalance, row.id],
+        (err) => {
+          if (err) {
+            console.error("addBonus update error:", err);
+            return resolve(row.bonus_balance);
+          }
+          db.run(
+            `INSERT INTO bonus_transactions (telegram_id, cafe_id, order_id, type, amount, balance_after, note) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [telegramId, cafeId, orderId || null, type || 'earn', amount, newBalance, note || ''],
+            (err2) => {
+              if (err2) console.error("addBonus transaction log error:", err2);
+              resolve(newBalance);
+            }
+          );
+        }
+      );
+    } catch (e) {
+      console.error("addBonus exception:", e);
+      resolve(0);
+    }
+  });
+};
+
+db.useBonus = function({ telegramId, cafeId, orderId, amount, note }) {
+  return new Promise(async (resolve) => {
+    try {
+      amount = parseInt(amount) || 0;
+      if (amount <= 0) return resolve(await db.getBonusBalance(telegramId, cafeId));
+      
+      const row = await db.getCustomerBonus(telegramId, cafeId);
+      let currentBalance = row.bonus_balance || 0;
+      
+      if (currentBalance < amount) {
+         console.warn(`useBonus: not enough balance (${currentBalance} < ${amount})`);
+         return resolve(currentBalance); // safely return current balance if not enough
+      }
+      
+      const newBalance = currentBalance - amount;
+      
+      db.run(
+        `UPDATE customer_bonus SET bonus_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [newBalance, row.id],
+        (err) => {
+          if (err) {
+            console.error("useBonus update error:", err);
+            return resolve(currentBalance);
+          }
+          db.run(
+            `INSERT INTO bonus_transactions (telegram_id, cafe_id, order_id, type, amount, balance_after, note) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [telegramId, cafeId, orderId || null, 'use', amount, newBalance, note || ''],
+            (err2) => {
+              if (err2) console.error("useBonus transaction log error:", err2);
+              resolve(newBalance);
+            }
+          );
+        }
+      );
+    } catch (e) {
+      console.error("useBonus exception:", e);
+      resolve(0);
+    }
+  });
+};
+
+db.refundBonus = function({ telegramId, cafeId, orderId, amount, note }) {
+  return new Promise(async (resolve) => {
+    try {
+      amount = parseInt(amount) || 0;
+      if (amount <= 0) return resolve(await db.getBonusBalance(telegramId, cafeId));
+      
+      const row = await db.getCustomerBonus(telegramId, cafeId);
+      const newBalance = (row.bonus_balance || 0) + amount;
+      
+      db.run(
+        `UPDATE customer_bonus SET bonus_balance = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        [newBalance, row.id],
+        (err) => {
+          if (err) {
+            console.error("refundBonus update error:", err);
+            return resolve(row.bonus_balance);
+          }
+          db.run(
+            `INSERT INTO bonus_transactions (telegram_id, cafe_id, order_id, type, amount, balance_after, note) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [telegramId, cafeId, orderId || null, 'refund', amount, newBalance, note || 'Refund from cancelled/modified order'],
+            (err2) => {
+              if (err2) console.error("refundBonus transaction log error:", err2);
+              resolve(newBalance);
+            }
+          );
+        }
+      );
+    } catch (e) {
+      console.error("refundBonus exception:", e);
+      resolve(0);
+    }
+  });
+};
+
+db.calculateCashback = function({ finalTotal, cashbackPercent, minOrderForCashback }) {
+  try {
+    if (!finalTotal || !cashbackPercent) return 0;
+    if (minOrderForCashback && finalTotal < minOrderForCashback) return 0;
+    
+    return Math.floor(finalTotal * cashbackPercent / 100);
+  } catch (e) {
+    console.error("calculateCashback exception:", e);
+    return 0;
+  }
+};
+
+db.calculateMaxBonusUse = function({ orderTotal, maxBonusUsePercent, currentBonusBalance }) {
+  try {
+    if (!orderTotal || !maxBonusUsePercent) return 0;
+    
+    const maxByPercent = Math.floor(orderTotal * maxBonusUsePercent / 100);
+    const maxToUse = Math.min(maxByPercent, currentBonusBalance || 0);
+    
+    return Math.max(0, maxToUse); // Prevent negative values
+  } catch (e) {
+    console.error("calculateMaxBonusUse exception:", e);
+    return 0;
+  }
+};
 
 module.exports = db;
