@@ -562,7 +562,7 @@ function goBackEmpty(ctx, u) {
   u.orderDraft = null;
   u.cart = [];
   u.history = [];
-  return ctx.reply("Menu:", mainMenu());
+  return ctx.reply("Menu:", mainMenu(ctx));
 }
 
 function goBackFallback(ctx, u) {
@@ -678,10 +678,23 @@ function chunkButtons(buttons, size = 2) {
   return chunks;
 }
 
-function mainMenu() {
+function mainMenu(ctx) {
+  let isReg = false;
+  if (ctx && ctx.from) {
+    const u = getUser(ctx.from.id);
+    isReg = u.isRegistered;
+  }
+  
+  if (isReg === false) {
+    return Markup.keyboard([
+      ["📝 Ro‘yxatdan o‘tish"]
+    ]).resize();
+  }
+
   return Markup.keyboard([
     ["☕️ Cafelar", "🍽 Restoranlar"],
-    ["🎁 Bonuslarim", "ℹ️ Info"]
+    ["👤 Profilim", "🎁 Bonuslarim"],
+    ["ℹ️ Info"]
   ]).resize();
 }
 
@@ -708,7 +721,7 @@ function courierMenu() {
 function cafePanelMenu() {
   return Markup.keyboard([
     ["➕ Mahsulot qo‘shish", "📦 Mahsulotlar"],
-    ["🗑 Mahsulot o‘chirish", "🔄 Mahsulot ON/OFF"],
+    ["🗑 Mahsulot o‘chirish", "🔄 Mahsulot ON/OFF", "🔎 Qidirish"],
     ["🚚 Yetkazib berish narxi", "🪑 Stol soni"],
     ["🛵 Kuryer qo‘shish", "🛵 Kuryerlar", "❌ Kuryer o‘chirish"],
     ["📊 Statistika", "🎁 Bonus statistikasi", "⏰ Ish vaqtini o'zgartirish"],
@@ -724,7 +737,7 @@ function generateCafePanelMenu(cafe) {
 
   const rows = [
     ["➕ Mahsulot qo'shish", "📦 Mahsulotlar"],
-    ["🗑 Mahsulot o'chirish", "🔄 Mahsulot ON/OFF"],
+    ["🗑 Mahsulot o'chirish", "🔄 Mahsulot ON/OFF", "🔎 Qidirish"],
     ["🚚 Yetkazib berish narxi", "🪑 Stol soni"],
     ["🛵 Kuryer qo'shish", "🛵 Kuryerlar", "❌ Kuryer o'chirish"],
     ["📊 Statistika", "🎁 Bonus statistikasi", "⏰ Ish vaqtini o'zgartirish"],
@@ -1397,7 +1410,7 @@ async function sendOrderToCafeGroup(order, cafe) {
     if (order.delivery_distance_km) {
       message += `📏 Masofa: ${Number(order.delivery_distance_km).toFixed(1)} km\n`;
     }
-    message += `🛵 Yetkazib berish: ${order.delivery_price} so'm\n`;
+    message += `🛵 Yetkazib berish: ${order.delivery_price === 0 ? 'Bepul' : order.delivery_price + " so'm"}\n`;
   }
 
   if (order.order_type === "🍽 Shu yerda yeyish") {
@@ -1632,6 +1645,17 @@ function getHourlyStats(cafeId, callback) {
     }
   );
 }
+bot.use(async (ctx, next) => {
+  if (ctx.from) {
+    const u = getUser(ctx.from.id);
+    u.isRegistered = await new Promise((resolve) => {
+      db.get('SELECT full_name, phone FROM users WHERE telegram_id = ?', [String(ctx.from.id)], (err, row) => {
+        resolve(!!(row && row.full_name && row.phone));
+      });
+    });
+  }
+  return next();
+});
 
 bot.start(async (ctx) => {
   try {
@@ -1646,7 +1670,7 @@ bot.start(async (ctx) => {
     u.cafeAuth = false;
     resetOrderDraft(u);
 
-    await ctx.reply("Menu:", mainMenu());
+    await ctx.reply("Menu:", mainMenu(ctx));
 
     const telegramId = String(ctx.from.id);
 
@@ -1705,7 +1729,7 @@ bot.command("id", (ctx) => {
 CHAT TYPE: ${ctx.chat.type}`);
 });
 
-bot.command("superPanel", (ctx) => {
+bot.command(["superPanel", "admin"], (ctx) => {
   const u = getUser(ctx.from.id);
   u.step = "login";
   u.temp = {};
@@ -1713,7 +1737,7 @@ bot.command("superPanel", (ctx) => {
   ctx.reply("Login:");
 });
 
-bot.command("cafePanel", (ctx) => {
+bot.command(["cafePanel", "panel"], (ctx) => {
   const u = getUser(ctx.from.id);
   u.step = "cafe_login";
   u.temp = {};
@@ -1899,6 +1923,33 @@ bot.on("contact", (ctx) => {
   const u = getUser(ctx.from.id);
   const phone = ctx.message.contact.phone_number;
 
+  if (u.step === "register_phone" || u.step === "edit_profile_phone") {
+    let p = phone.replace(/[^0-9+]/g, '');
+    if (!p.startsWith('+')) p = '+' + p;
+
+    if (u.step === "register_phone") {
+      const regName = u.temp.regName || ctx.from.first_name || 'Foydalanuvchi';
+      db.run(
+        `INSERT INTO users (telegram_id, full_name, phone, username) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone`,
+        [String(ctx.from.id), regName, p, ctx.from.username || ''],
+        (err) => {
+          if (err) return ctx.reply("Xatolik yuz berdi");
+          u.isRegistered = true;
+          u.step = "home";
+          u.temp = {};
+          ctx.reply(`✅ Muvaffaqiyatli ro‘yxatdan o‘tdingiz, ${regName}!`, mainMenu(ctx));
+        }
+      );
+    } else {
+      db.run(`UPDATE users SET phone = ? WHERE telegram_id = ?`, [p, String(ctx.from.id)], (err) => {
+        if (err) return ctx.reply("Xatolik yuz berdi");
+        u.step = "home";
+        ctx.reply("✅ Raqam o‘zgartirildi.", mainMenu(ctx));
+      });
+    }
+    return;
+  }
+
   if (u.step === "order_phone_contact") {
     u.orderDraft.customer_phone = phone;
 
@@ -1956,7 +2007,7 @@ bot.on("location", (ctx) => {
 
     db.get(`SELECT latitude, longitude, delivery_price FROM cafes WHERE id = ?`, [u.selectedCafeId], (err, cafe) => {
       if (err || !cafe) {
-        return ctx.reply("❌ Cafe topilmadi", mainMenu());
+        return ctx.reply("❌ Cafe topilmadi", mainMenu(ctx));
       }
 
       let deliveryPrice = Number(cafe.delivery_price || 0);
@@ -1965,7 +2016,10 @@ bot.on("location", (ctx) => {
       const cafeLat = Number(cafe.latitude);
       const cafeLon = Number(cafe.longitude);
 
-      if (cafeLat && cafeLon) {
+      if (deliveryPrice === 0) {
+        u.orderDraft.delivery_distance_km = null;
+        u.orderDraft.delivery_price = 0;
+      } else if (cafeLat && cafeLon) {
         const rawDistance = getDistanceKm(u.orderDraft.latitude, u.orderDraft.longitude, cafeLat, cafeLon);
         if (rawDistance !== null && !isNaN(rawDistance)) {
           u.orderDraft.delivery_distance_km = rawDistance;
@@ -1984,7 +2038,8 @@ bot.on("location", (ctx) => {
       const productsTotal = totalCart(u.cart);
       const orderTotal = productsTotal + deliveryPrice;
 
-      const text = `${distanceMsg}🛵 Yetkazib berish: ${deliveryPrice} so‘m\n\n🧾 Mahsulotlar: ${productsTotal} so‘m\n💰 Jami: ${orderTotal} so‘m\n\nDavom etamizmi?`;
+      const deliveryStr = deliveryPrice === 0 ? "Bepul" : `${deliveryPrice} so‘m`;
+      const text = `${distanceMsg}🛵 Yetkazib berish: ${deliveryStr}\n\n🧾 Mahsulotlar: ${productsTotal} so‘m\n💰 Jami: ${orderTotal} so‘m\n\nDavom etamizmi?`;
 
       u.step = "order_location_confirm";
       return ctx.reply(text, Markup.keyboard([
@@ -2491,7 +2546,7 @@ bot.action(/assignCourier_(\d+)_(\d+)/, async (ctx) => {
 ` +
                   `💰 Mahsulotlar: ${Number(order.total || 0) - Number(order.delivery_price || 0)} so'm
 ` +
-                  `🚚 Yetkazib berish: ${Number(order.delivery_price || 0)} so'm
+                  `🚚 Yetkazib berish: ${Number(order.delivery_price || 0) === 0 ? 'Bepul' : Number(order.delivery_price || 0) + " so'm"}
 ` +
                   `💵 Jami to‘lov: ${Number(order.total || 0)} so'm
 `;
@@ -2895,7 +2950,7 @@ bot.action(/toggleVar_(\d+)_(\d+)/, async (ctx) => {
 
     if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
 
-    db.get(`SELECT * FROM products WHERE id = ? AND cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
+    db.get(`SELECT p1.*, (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) AS visual_id FROM products p1 WHERE p1.id = ? AND p1.cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
       if (err || !product) return safeAnswerCbQuery(ctx, '❌ Mahsulot topilmadi');
 
       let variants = [];
@@ -2917,7 +2972,7 @@ bot.action(/toggleVar_(\d+)_(\d+)/, async (ctx) => {
 
           // Rebuild inline keyboard with updated status
           const statusIcon = Number(product.available) === 1 ? "✅" : "❌";
-          let msg = `🔄 ${product.name} (ID: ${product.id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
+          let msg = `🔄 ${product.name} (ID: ${product.visual_id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
           const rows = [];
           variants.forEach((v, i) => {
             const vIcon = v.enabled !== false ? "✅" : "❌";
@@ -2948,7 +3003,7 @@ bot.action(/toggleProdAvail_(\d+)/, async (ctx) => {
 
     if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
 
-    db.get(`SELECT * FROM products WHERE id = ? AND cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
+    db.get(`SELECT p1.*, (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) AS visual_id FROM products p1 WHERE p1.id = ? AND p1.cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
       if (err || !product) return safeAnswerCbQuery(ctx, '❌ Mahsulot topilmadi');
 
       const newStatus = Number(product.available) === 1 ? 0 : 1;
@@ -2966,7 +3021,7 @@ bot.action(/toggleProdAvail_(\d+)/, async (ctx) => {
           } catch (e) { variants = []; }
 
           const statusIcon = newStatus === 1 ? "✅" : "❌";
-          let msg = `🔄 ${product.name} (ID: ${product.id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
+          let msg = `🔄 ${product.name} (ID: ${product.visual_id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
           const rows = [];
           variants.forEach((v, i) => {
             const vIcon = v.enabled !== false ? "✅" : "❌";
@@ -2995,7 +3050,7 @@ bot.action(/edit_prod_(\d+)/, async (ctx) => {
 
   if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
 
-  db.get(`SELECT * FROM products WHERE id = ? AND cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
+  db.get(`SELECT p1.*, (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) AS visual_id FROM products p1 WHERE p1.id = ? AND p1.cafe_id = ?`, [productId, u.cafeAdminId], async (err, product) => {
     if (err || !product) return safeAnswerCbQuery(ctx, '❌ Mahsulot topilmadi');
 
     u.temp.productId = productId;
@@ -3007,7 +3062,7 @@ bot.action(/edit_prod_(\d+)/, async (ctx) => {
 
     await safeReply(
       ctx,
-      `📝 "${product.name}" (ID: ${product.id}) ni tahrirlash:\nNimani o‘zgartirmoqchisiz?`,
+      `📝 "${product.name}" (ID: ${product.visual_id}) ni tahrirlash:\nNimani o‘zgartirmoqchisiz?`,
       Markup.keyboard([
         ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
         ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
@@ -3027,6 +3082,21 @@ bot.action(/admin_prod_page_(\d+)/, async (ctx) => {
   if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
 
   sendAdminProductsPage(ctx, u.cafeAdminId, page, true);
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action(/search_page_(\d+)/, async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const page = Number(ctx.match[1]);
+  const u = getUser(ctx.from.id);
+  if (!u.cafeAdminId) return safeAnswerCbQuery(ctx, '❌ Avval cafe panelga kiring');
+  
+  const query = u.temp && u.temp.searchQuery;
+  if (!query) {
+    return safeAnswerCbQuery(ctx, '❌ Qidiruv muddati tugagan, boshqatdan qidiring');
+  }
+
+  sendSearchPage(ctx, u.cafeAdminId, query, page, true);
   await safeAnswerCbQuery(ctx);
 });
 
@@ -3092,7 +3162,7 @@ function sendAdminProductsPage(ctx, cafeId, page = 0, isEdit = false) {
           priceText = `${p.price || 0} so'm`;
         }
 
-        msg += `🔹 ${globalIndex}-tovar (ID: ${p.id})\n`;
+        msg += `🔹 ${globalIndex}-tovar\n`;
         msg += `🍔 ${p.name || "-"}\n`;
         msg += `💰 ${priceText}\n`;
         msg += `📂 ${p.category || "-"}\n`;
@@ -3110,8 +3180,9 @@ function sendAdminProductsPage(ctx, cafeId, page = 0, isEdit = false) {
       });
 
       const editButtons = [];
-      pageItems.forEach((p) => {
-        editButtons.push(Markup.button.callback(`✏️ ${p.id}`, `edit_prod_${p.id}`));
+      pageItems.forEach((p, idx) => {
+        const globalIndex = safePage * limit + idx + 1;
+        editButtons.push(Markup.button.callback(`✏️ ${globalIndex}`, `edit_prod_${p.id}`));
       });
 
       const inlineRows = [];
@@ -3143,6 +3214,61 @@ function sendAdminProductsPage(ctx, cafeId, page = 0, isEdit = false) {
     }
   );
 }
+
+function sendSearchPage(ctx, cafeId, queryText, page = 0, isEdit = false) {
+  const query = `%${queryText.toLowerCase()}%`;
+  db.all(
+    `SELECT p1.*, (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) AS visual_id FROM products p1 WHERE p1.cafe_id = ? AND LOWER(p1.name) LIKE ? ORDER BY p1.id DESC`,
+    [cafeId, query],
+    (err, rows) => {
+      if (err) return safeSendMessage(ctx.from.id, "Xatolik bo‘ldi.");
+      if (!rows || !rows.length) {
+        if (!isEdit) safeSendMessage(ctx.from.id, "Mahsulot topilmadi");
+        return;
+      }
+
+      const limit = 10;
+      const totalPages = Math.ceil(rows.length / limit);
+      const safePage = Math.max(0, Math.min(page, totalPages - 1));
+      const pageItems = rows.slice(safePage * limit, (safePage + 1) * limit);
+
+      let msg = `🔎 Natijalar (Sahifa ${safePage + 1} / ${totalPages}):\n\n`;
+      const editButtons = [];
+      pageItems.forEach(p => {
+        msg += `🔹 Visual ID: ${p.visual_id} (Real ID: ${p.id})\n`;
+        msg += `📦 Nomi: ${p.name}\n`;
+        msg += `📂 Kategoriya: ${p.category || "-"}\n`;
+        msg += `👁 Status: ${Number(p.available) === 1 ? "✅ ON" : "❌ OFF"}\n\n`;
+        editButtons.push(Markup.button.callback(`✏️ ${p.visual_id}`, `edit_prod_${p.id}`));
+      });
+      
+      const inlineRows = [];
+      for (let i = 0; i < editButtons.length; i += 5) {
+        inlineRows.push(editButtons.slice(i, i + 5));
+      }
+      
+      const navButtons = [];
+      if (safePage > 0) {
+        navButtons.push(Markup.button.callback("⬅️ Oldingi", `search_page_${safePage - 1}`));
+      }
+      if (safePage < totalPages - 1) {
+        navButtons.push(Markup.button.callback("➡️ Keyingi", `search_page_${safePage + 1}`));
+      }
+      if (navButtons.length > 0) {
+        inlineRows.push(navButtons);
+      }
+      
+      const kb = inlineRows.length > 0 ? Markup.inlineKeyboard(inlineRows) : null;
+
+      if (isEdit) {
+        safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, msg, kb ? { reply_markup: kb.reply_markup } : undefined).catch(() => { });
+      } else {
+        safeReply(ctx, msg, kb ? kb : undefined);
+      }
+    }
+  );
+}
+
 
 // /foiz_ va komissiya tahriri — umumiy text handlerdan oldin
 bot.hears(/^\/foiz_(\d+)/, async (ctx) => {
@@ -3299,6 +3425,106 @@ bot.on("text", (ctx) => {
   const text = ctx.message.text;
   const u = getUser(ctx.from.id);
 
+  if (text === "📝 Ro‘yxatdan o‘tish") {
+    if (u.isRegistered) return ctx.reply("Siz allaqachon ro‘yxatdan o‘tgansiz", mainMenu(ctx));
+    u.step = "register_name";
+    return ctx.reply("Iltimos, ismingizni kiriting:", Markup.keyboard([["⬅️ Orqaga"]]).resize());
+  }
+
+  if (u.step === "register_name") {
+    if (text === "⬅️ Orqaga") {
+       u.step = "home";
+       return ctx.reply("Bekor qilindi.", mainMenu(ctx));
+    }
+    u.temp = u.temp || {};
+    u.temp.regName = text.trim();
+    u.step = "register_phone";
+    return ctx.reply("Iltimos, telefon raqamingizni yuboring (Masalan: +998901234567):", Markup.keyboard([
+      [Markup.button.contactRequest("📱 Raqamni yuborish")],
+      ["⬅️ Orqaga"]
+    ]).resize());
+  }
+
+  if (u.step === "register_phone" || u.step === "edit_profile_phone") {
+    if (text === "⬅️ Orqaga") {
+       u.step = "home";
+       return ctx.reply("Bekor qilindi.", mainMenu(ctx));
+    }
+    const p = text.replace(/[^0-9+]/g, '');
+    if (p.length >= 9) {
+       let finalPhone = p.startsWith('+') ? p : '+' + p;
+       if (u.step === "register_phone") {
+         const regName = (u.temp && u.temp.regName) ? u.temp.regName : (ctx.from.first_name || 'Foydalanuvchi');
+         db.run(
+           `INSERT INTO users (telegram_id, full_name, phone, username) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET full_name=excluded.full_name, phone=excluded.phone`,
+           [String(ctx.from.id), regName, finalPhone, ctx.from.username || ''],
+           (err) => {
+             if (err) return ctx.reply("Xatolik yuz berdi");
+             u.isRegistered = true;
+             u.step = "home";
+             u.temp = {};
+             ctx.reply(`✅ Muvaffaqiyatli ro‘yxatdan o‘tdingiz, ${regName}!`, mainMenu(ctx));
+           }
+         );
+       } else {
+         db.run(`UPDATE users SET phone = ? WHERE telegram_id = ?`, [finalPhone, String(ctx.from.id)], (err) => {
+           if (err) return ctx.reply("Xatolik yuz berdi");
+           u.step = "home";
+           ctx.reply("✅ Raqam o‘zgartirildi.", mainMenu(ctx));
+         });
+       }
+       return;
+    }
+    return ctx.reply("Iltimos, raqamingizni pastdagi '📱 Raqamni yuborish' tugmasi orqali yuboring yoki to'g'ri formatda yozing (+998901234567).", Markup.keyboard([
+      [Markup.button.contactRequest("📱 Raqamni yuborish")],
+      ["⬅️ Orqaga"]
+    ]).resize());
+  }
+
+  if (text === "👤 Profilim") {
+    if (!u.isRegistered) return ctx.reply("Avval ro‘yxatdan o‘ting", mainMenu(ctx));
+    
+    db.get('SELECT * FROM users WHERE telegram_id = ?', [String(ctx.from.id)], (err, row) => {
+      if (err || !row) return ctx.reply("Xatolik yuz berdi");
+      
+      const msg = `👤 Profilim\n\n👤 Ism: ${row.full_name || "-"}\n📱 Telefon: ${row.phone || "-"}\n🎁 Bonus: ${row.bonus || 0}`;
+      
+      u.step = "profile_menu";
+      ctx.reply(msg, Markup.keyboard([
+        ["✏️ Ismni o‘zgartirish", "📱 Raqamni o‘zgartirish"],
+        ["🏠 Bosh menyuga qaytish"]
+      ]).resize());
+    });
+    return;
+  }
+
+  if (text === "✏️ Ismni o‘zgartirish" && u.step === "profile_menu") {
+    u.step = "edit_profile_name";
+    return ctx.reply("Yangi ismingizni kiriting:", Markup.keyboard([["⬅️ Orqaga"]]).resize());
+  }
+
+  if (u.step === "edit_profile_name") {
+    if (text === "⬅️ Orqaga") {
+       u.step = "profile_menu";
+       return ctx.reply("Bekor qilindi.", mainMenu(ctx));
+    }
+    const newName = text.trim();
+    db.run('UPDATE users SET full_name = ? WHERE telegram_id = ?', [newName, String(ctx.from.id)], (err) => {
+      if (err) return ctx.reply("Xatolik yuz berdi");
+      u.step = "home";
+      ctx.reply("✅ Ism o‘zgartirildi.", mainMenu(ctx));
+    });
+    return;
+  }
+
+  if (text === "📱 Raqamni o‘zgartirish" && u.step === "profile_menu") {
+    u.step = "edit_profile_phone";
+    return ctx.reply("Yangi raqamingizni yuboring:", Markup.keyboard([
+      [Markup.button.contactRequest("📱 Raqamni yuborish")],
+      ["⬅️ Orqaga"]
+    ]).resize());
+  }
+
   if (text === "⬅️ Orqaga") {
     return goBack(ctx, u);
   }
@@ -3375,7 +3601,7 @@ bot.on("text", (ctx) => {
     u.selectedCafeId = null;
     u.selectedCafeName = null;
     u.history = [];
-    return safeReply(ctx, "Menu:", mainMenu());
+    return safeReply(ctx, "Menu:", mainMenu(ctx));
   }
 
   const telegramId = String(ctx.from.id);
@@ -3501,20 +3727,20 @@ Ishlab topildi: ${stats.totalSum} so'm`;
   }
 
   if (u.step === "edit_product_id") {
-    const id = Number(text);
+    const visualId = Number(text);
 
     db.get(
-      `SELECT * FROM products WHERE id = ? AND cafe_id = ?`,
-      [id, u.cafeAdminId],
+      `SELECT p1.*, (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) AS visual_id FROM products p1 WHERE p1.cafe_id = ? AND (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) = ?`,
+      [u.cafeAdminId, visualId],
       (err, product) => {
         if (!product) return ctx.reply("Topilmadi ❌");
 
         pushNavHistory(u);
-        u.temp.productId = id;
+        u.temp.productId = product.id;
         u.step = "edit_product_field";
 
         ctx.reply(
-          `📝 "${product.name}" (ID: ${product.id}) ni tahrirlash:\nNimani o‘zgartirmoqchisiz?`,
+          `📝 "${product.name}" (ID: ${product.visual_id}) ni tahrirlash:\nNimani o‘zgartirmoqchisiz?`,
           Markup.keyboard([
             ["✏️ Nomini o‘zgartirish", "💰 Narxini o‘zgartirish"],
             ["📝 Izohni o‘zgartirish", "🖼 Rasmni o‘zgartirish / qo‘shish"],
@@ -3912,21 +4138,34 @@ Ishlab topildi: ${stats.totalSum} so'm`;
     return ctx.reply("O‘chirish uchun mahsulot ID yozing:", simpleBackMenu());
   }
 
+  if (text === "🔎 Qidirish") {
+    u.step = "search_product";
+    return ctx.reply("Qidirish uchun mahsulot nomini kiriting (qisman yozsangiz ham bo'ladi):", simpleBackMenu());
+  }
+
+  if (u.step === "search_product") {
+    const q = text.trim();
+    if (!u.temp) u.temp = {};
+    u.temp.searchQuery = q;
+    sendSearchPage(ctx, u.cafeAdminId, q, 0, false);
+    return;
+  }
+
   if (text === "🔄 Mahsulot ON/OFF") {
     u.step = "toggle_product";
     return ctx.reply("Mahsulot ID yozing:", simpleBackMenu());
   }
 
   if (u.step === "toggle_product") {
-    const id = Number(text);
+    const visualId = Number(text);
 
-    if (!id) {
+    if (!visualId) {
       return ctx.reply("ID noto‘g‘ri ❌");
     }
 
     db.get(
-      `SELECT * FROM products WHERE id = ? AND cafe_id = ?`,
-      [id, u.cafeAdminId],
+      `SELECT p1.*, (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) AS visual_id FROM products p1 WHERE p1.cafe_id = ? AND (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) = ?`,
+      [u.cafeAdminId, visualId],
       (err, product) => {
         if (err || !product) {
           return ctx.reply("Mahsulot topilmadi ❌");
@@ -3941,7 +4180,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
           // Product has variants — show inline buttons for each variant + product on/off
           u.step = "cafe";
           const statusIcon = Number(product.available) === 1 ? "✅" : "❌";
-          let msg = `🔄 ${product.name} (ID: ${product.id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
+          let msg = `🔄 ${product.name} (ID: ${product.visual_id})\n📌 Mahsulot holati: ${statusIcon}\n\nVariantlar:`;
 
           const rows = [];
           variants.forEach((v, i) => {
@@ -3957,7 +4196,7 @@ Ishlab topildi: ${stats.totalSum} so'm`;
 
           db.run(
             `UPDATE products SET available = ? WHERE id = ?`,
-            [newStatus, id],
+            [newStatus, product.id],
             (err2) => {
               if (err2) return ctx.reply("Xatolik ❌");
 
@@ -3978,30 +4217,34 @@ Ishlab topildi: ${stats.totalSum} so'm`;
   }
 
   if (u.step === "delete_product") {
-    const id = Number(text);
+    const visualId = Number(text);
 
-    if (!id) {
+    if (!visualId) {
       return ctx.reply("ID ni to‘g‘ri yozing ❌");
     }
 
-    db.run(
-      `DELETE FROM products WHERE id = ? AND cafe_id = ?`,
-      [id, u.cafeAdminId],
-      function (err) {
-        if (err) {
-          console.error("Mahsulot o'chirishda xatolik:", err);
-          return ctx.reply("Xatolik ❌");
-        }
+    db.get(
+      `SELECT id FROM products p1 WHERE p1.cafe_id = ? AND (SELECT COUNT(*) FROM products p2 WHERE p2.cafe_id = p1.cafe_id AND p2.id >= p1.id) = ?`,
+      [u.cafeAdminId, visualId],
+      (err, row) => {
+        if (err || !row) return ctx.reply("Mahsulot topilmadi ❌");
 
-        if (this.changes === 0) {
-          return ctx.reply("Mahsulot topilmadi ❌");
-        }
+        db.run(
+          `DELETE FROM products WHERE id = ? AND cafe_id = ?`,
+          [row.id, u.cafeAdminId],
+          function (err) {
+            if (err) {
+              console.error("Mahsulot o'chirishda xatolik:", err);
+              return ctx.reply("Xatolik ❌");
+            }
 
-        u.step = "cafe";
-        getCafeMenuAsync(u.cafeAdminId, (menu) => {
-          ctx.reply("🗑 Mahsulot o‘chirildi ✅", menu);
-        });
-      },
+            u.step = "cafe";
+            getCafeMenuAsync(u.cafeAdminId, (menu) => {
+              ctx.reply("🗑 Mahsulot o‘chirildi ✅", menu);
+            });
+          }
+        );
+      }
     );
 
     return;
@@ -4526,7 +4769,7 @@ ${formatDate(cafe.paid_until)}`;
     u.selectedCafeId = null;
     u.selectedCafeName = null;
     u.history = [];
-    return ctx.reply("Menu:", mainMenu());
+    return ctx.reply("Menu:", mainMenu(ctx));
   }
 
   if (text === "📋 Cafelar") {
@@ -5534,6 +5777,7 @@ Parol: ${courierPassword}`;
 
   // savatcha
   if (text === "🛒 Savatcha") {
+    if (!u.isRegistered) return ctx.reply("Avval ro‘yxatdan o‘ting", mainMenu(ctx));
     if (!u.cart.length) return ctx.reply("Savatcha bo‘sh.");
 
     const { text: cartText, total } = formatCart(u.cart);
@@ -5553,7 +5797,7 @@ ${cartText}
       `SELECT * FROM cafes WHERE id = ?`,
       [u.selectedCafeId],
       (err, cafe) => {
-        if (!cafe) return ctx.reply("Savatcha tozalandi.", mainMenu());
+        if (!cafe) return ctx.reply("Savatcha tozalandi.", mainMenu(ctx));
         ctx.reply("Savatcha tozalandi.", customerCafeFirstScreenMenu(cafe));
       },
     );
@@ -5562,24 +5806,28 @@ ${cartText}
 
   // buyurtma boshlash
   if (text === "✅ Buyurtma berish") {
+    if (!u.isRegistered) return ctx.reply("Avval ro‘yxatdan o‘ting", mainMenu(ctx));
     if (!u.cart.length) return ctx.reply("Savatcha bo‘sh.");
 
-    u.orderDraft = {
-      cafe_id: u.selectedCafeId,
-      username: safeUsername(ctx),
-      customer_name: "",
-      customer_phone: "",
-      customer_telegram: safeUsername(ctx),
-      order_type: "",
-      address: "",
-      note: "",
-      latitude: null,
-      longitude: null,
-      table_number: "",
-    };
+    db.get('SELECT full_name, phone FROM users WHERE telegram_id = ?', [String(ctx.from.id)], (err, row) => {
+      u.orderDraft = {
+        cafe_id: u.selectedCafeId,
+        username: safeUsername(ctx),
+        customer_name: row ? row.full_name : "",
+        customer_phone: row ? row.phone : "",
+        customer_telegram: safeUsername(ctx),
+        order_type: "",
+        address: "",
+        note: "",
+        latitude: null,
+        longitude: null,
+        table_number: "",
+      };
 
-    u.step = "order_type";
-    return ctx.reply("Buyurtma turini tanlang:", orderTypeMenu());
+      u.step = "order_type";
+      ctx.reply("Buyurtma turini tanlang:", orderTypeMenu());
+    });
+    return;
   }
 
   if (u.step === "order_type") {
@@ -5592,18 +5840,7 @@ ${cartText}
     }
 
     u.orderDraft.order_type = text;
-    u.step = "order_name";
-    return ctx.reply("Ismingiz:");
-  }
 
-  if (u.step === "order_name") {
-    u.orderDraft.customer_name = text;
-    u.step = "order_phone_contact";
-    return ctx.reply("Telefon raqamingizni yuboring:", contactMenu());
-  }
-
-  if (u.step === "order_phone_contact") {
-    u.orderDraft.customer_phone = text;
 
     if (u.orderDraft.order_type === "🚚 Yetkazib berish") {
       u.step = "order_address";
@@ -5699,13 +5936,13 @@ ${cartText}
 
     if (!u.cart || !u.cart.length) {
       u.step = "home";
-      return ctx.reply("Savat bo‘sh.", mainMenu());
+      return ctx.reply("Savat bo‘sh.", mainMenu(ctx));
     }
 
     db.get(`SELECT cashback_enabled, max_bonus_use_percent, delivery_price FROM cafes WHERE id = ?`, [u.selectedCafeId], async (err, cafe) => {
       if (err || !cafe) {
         u.step = "home";
-        return ctx.reply("❌ Cafe topilmadi.", mainMenu());
+        return ctx.reply("❌ Cafe topilmadi.", mainMenu(ctx));
       }
 
       const totalItems = totalCart(u.cart);
@@ -5959,7 +6196,7 @@ function finalizeOrder(ctx, u) {
     const openStatus = getCafeEffectiveOpenStatus(cafe);
     if (openStatus.reason === "hidden") {
       u.step = "home";
-      return safeSendMessage(ctx.from.id, "Cafe topilmadi.", mainMenu());
+      return safeSendMessage(ctx.from.id, "Cafe topilmadi.", mainMenu(ctx));
     }
     if (!openStatus.isOpen) {
       u.step = "inside_cafe";
@@ -6045,36 +6282,36 @@ function finalizeOrder(ctx, u) {
           }
 
           const receiptText = `✅ Buyurtmangiz uchun rahmat!\n\n📋 Zakaz #${orderId}\n\n${itemsText}` +
-            (order.delivery_price > 0 ? `\n🚚 Yetkazib berish: ${order.delivery_price} so'm` : '') +
+            (order.order_type === "🚚 Yetkazib berish" ? `\n🚚 Yetkazib berish: ${order.delivery_price > 0 ? order.delivery_price + " so'm" : "Bepul"}` : '') +
             `\n\n💰 Jami: ${grandTotalRaw} so'm` + bonusTextClient;
 
           if (order.payment_status === 'pending_verification') {
             sendVerificationToCafeGroup(order, cafe).then(res => {
-              const pendingText = `⏳ To'lov tekshirilmoqda.\nTasksdiqlangandan so'ng xabar olasiz.\n\n📋 Zakaz #${orderId}\n\n${itemsText}` + (order.delivery_price > 0 ? `\n🚚 Yetkazib berish: ${order.delivery_price} so'm` : '') + `\n\n💰 Jami: ${grandTotalRaw} so'm` + bonusTextClient;
+              const pendingText = `⏳ To'lov tekshirilmoqda.\nTasksdiqlangandan so'ng xabar olasiz.\n\n📋 Zakaz #${orderId}\n\n${itemsText}` + (order.order_type === "🚚 Yetkazib berish" ? `\n🚚 Yetkazib berish: ${order.delivery_price > 0 ? order.delivery_price + " so'm" : "Bepul"}` : '') + `\n\n💰 Jami: ${grandTotalRaw} so'm` + bonusTextClient;
               if (res && res.success) {
 
 
 
-                safeSendMessage(ctx.from.id, pendingText, mainMenu());
+                safeSendMessage(ctx.from.id, pendingText, mainMenu(ctx));
 
               } else if (res && res.reason === 'no_group') {
-                safeSendMessage(ctx.from.id, `Buyurtma qabul qilindi, lekin cafe group sozlanmagan\n\n${pendingText}`, mainMenu());
+                safeSendMessage(ctx.from.id, `Buyurtma qabul qilindi, lekin cafe group sozlanmagan\n\n${pendingText}`, mainMenu(ctx));
                 if (process.env.SUPER_ADMIN_TELEGRAM_ID) safeSendMessage(process.env.SUPER_ADMIN_TELEGRAM_ID, `⚠️ DIQQAT! "${cafe.name}" kafesida order_group_id yo'q. Zakaz #${order.id}`);
               } else {
-                safeSendMessage(ctx.from.id, `❌ Groupga yuborishda xatolik yuz berdi, lekin buyurtma qabul qilindi.\n\n${pendingText}`, mainMenu());
+                safeSendMessage(ctx.from.id, `❌ Groupga yuborishda xatolik yuz berdi, lekin buyurtma qabul qilindi.\n\n${pendingText}`, mainMenu(ctx));
               }
               u.cart = []; u.step = "home"; resetOrderDraft(u);
             });
           } else {
             sendOrderToCafeGroup(order, cafe).then(res => {
               if (res && res.success) {
-                safeSendMessage(ctx.from.id, receiptText, mainMenu());
+                safeSendMessage(ctx.from.id, receiptText, mainMenu(ctx));
 
               } else if (res && res.reason === 'no_group') {
-                safeSendMessage(ctx.from.id, `Buyurtma qabul qilindi, lekin cafe group sozlanmagan\n\n${receiptText}`, mainMenu());
+                safeSendMessage(ctx.from.id, `Buyurtma qabul qilindi, lekin cafe group sozlanmagan\n\n${receiptText}`, mainMenu(ctx));
                 if (process.env.SUPER_ADMIN_TELEGRAM_ID) safeSendMessage(process.env.SUPER_ADMIN_TELEGRAM_ID, `⚠️ DIQQAT! "${cafe.name}" kafesida order_group_id yo'q. Zakaz #${order.id}`);
               } else {
-                safeSendMessage(ctx.from.id, `❌ Groupga yuborishda xatolik yuz berdi, lekin buyurtma qabul qilindi.\n\n${receiptText}`, mainMenu());
+                safeSendMessage(ctx.from.id, `❌ Groupga yuborishda xatolik yuz berdi, lekin buyurtma qabul qilindi.\n\n${receiptText}`, mainMenu(ctx));
               }
               u.cart = []; u.step = "home"; resetOrderDraft(u);
             });
@@ -6137,7 +6374,7 @@ async function sendVerificationToCafeGroup(order, cafe) {
     if (order.delivery_distance_km) {
       msg += `\n📏 Masofa: ${Number(order.delivery_distance_km).toFixed(1)} km`;
     }
-    msg += `\n🛵 Yetkazib berish: ${order.delivery_price} so'm`;
+    msg += `\n🛵 Yetkazib berish: ${order.delivery_price === 0 ? 'Bepul' : order.delivery_price + " so'm"}`;
   }
   if (order.order_type === "🍽 Shu yerda yeyish") {
     msg += `\n🪑 Stol: ${order.table_number || "-"}`;
@@ -6495,6 +6732,10 @@ bot.action(/^stats:tc:(\d+):(\d+)$/, async (ctx) => {
     const rows = await new Promise(res => db.all(
       `SELECT COALESCE(customer_name, username, CAST(user_id AS TEXT)) as name,
               COALESCE(customer_phone, CAST(user_id AS TEXT)) as key,
+              customer_phone,
+              customer_telegram,
+              username,
+              user_id,
               COUNT(*) as orders_count,
               SUM(CASE WHEN final_total > 0 OR bonus_used > 0 THEN final_total ELSE total END) as spent
         FROM orders
@@ -6515,7 +6756,13 @@ bot.action(/^stats:tc:(\d+):(\d+)$/, async (ctx) => {
       text += 'Hozircha ma\'lumot yo\'q';
     } else {
       rows.forEach((r, i) => {
+        const phone = r.customer_phone ? r.customer_phone : "Noma'lum";
+        let tg = r.customer_telegram || r.username;
+        tg = tg ? (tg.startsWith('@') ? tg : '@' + tg) : (r.user_id ? `tg://user?id=${r.user_id}` : "Noma'lum");
+        
         text += (offset + i + 1) + '. ' + (r.name || 'Noma\'lum') + ' — ' + r.orders_count + ' ta, ' + (r.spent || 0) + ' so\'m\n';
+        text += `   📱 ${phone}\n`;
+        text += `   ✈️ ${tg}\n\n`;
       });
     }
 

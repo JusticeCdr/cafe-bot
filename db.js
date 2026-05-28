@@ -85,7 +85,17 @@ db.serialize(() => {
     )
   `);
 
-
+  db.all(`PRAGMA table_info(users)`, [], (err, rows) => {
+    if (err) return console.error("PRAGMA xato users:", err);
+    const checkCol = (colName, def) => {
+      if (!rows.some((col) => col.name === colName)) {
+        db.run(`ALTER TABLE users ADD COLUMN ${colName} ${def}`, () => {});
+      }
+    };
+    checkCol("full_name", "TEXT");
+    checkCol("phone", "TEXT");
+    checkCol("bonus", "INTEGER DEFAULT 0");
+  });
 
   db.all(`PRAGMA table_info(couriers)`, [], (err, rows) => {
     if (err) return console.error("PRAGMA xato:", err);
