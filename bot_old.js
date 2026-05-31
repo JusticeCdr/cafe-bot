@@ -1445,7 +1445,7 @@ function orderItemsText(itemsJson) {
 }
 
 async function sendOrderToCafeGroup(order, cafe) {
-  console.log("SEND GROUP DEBUG", { orderId: order.id, cafeId: cafe.id, order_group_id: cafe.order_group_id, payment_type: order.payment_type, bonus_used: order.bonus_used, final_total: order.final_total });
+  // console.log("SEND GROUP DEBUG", { orderId: order.id, cafeId: cafe.id, order_group_id: cafe.order_group_id, payment_type: order.payment_type, bonus_used: order.bonus_used, final_total: order.final_total });
   if (!cafe.order_group_id) return { success: false, reason: 'no_group' };
 
   let groupId = String(cafe.order_group_id).trim().replace(".0", "");
@@ -6512,7 +6512,7 @@ const workingHoursInitialTimer = setTimeout(runWorkingHoursAutoClose, 5000);
 if (workingHoursInitialTimer.unref) workingHoursInitialTimer.unref();
 
 async function sendVerificationToCafeGroup(order, cafe) {
-  console.log("SEND GROUP DEBUG", { orderId: order.id, cafeId: cafe.id, order_group_id: cafe.order_group_id, payment_type: order.payment_type, bonus_used: order.bonus_used, final_total: order.final_total });
+  // console.log("SEND GROUP DEBUG", { orderId: order.id, cafeId: cafe.id, order_group_id: cafe.order_group_id, payment_type: order.payment_type, bonus_used: order.bonus_used, final_total: order.final_total });
   if (!cafe.order_group_id) return { success: false, reason: 'no_group' };
 
   let groupId = String(cafe.order_group_id).trim().replace(".0", "");
