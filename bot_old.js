@@ -527,7 +527,6 @@ function navFrameFromUser(u) {
     selectedCafeName: u.selectedCafeName,
     cafeAdminId: u.cafeAdminId,
     orderDraft: u.orderDraft != null ? deepCloneJson(u.orderDraft) : null,
-    cart: deepCloneJson(u.cart || []),
     lastReply: cloneLastReplySnapshot(u.lastReply),
   };
 }
@@ -560,7 +559,6 @@ function goBackEmpty(ctx, u) {
   u.selectedCafeId = null;
   u.selectedCafeName = null;
   u.orderDraft = null;
-  u.cart = [];
   u.history = [];
   return ctx.reply("Menu:", mainMenu(ctx));
 }
@@ -604,7 +602,6 @@ function goBack(ctx, u) {
   u.cafeAdminId = prev.cafeAdminId;
   u.orderDraft =
     prev.orderDraft !== undefined ? (prev.orderDraft == null ? null : deepCloneJson(prev.orderDraft)) : null;
-  u.cart = Array.isArray(prev.cart) ? deepCloneJson(prev.cart) : [];
 
   if (prev.lastReply && Array.isArray(prev.lastReply.args) && prev.lastReply.args.length > 0) {
     try {
@@ -822,7 +819,7 @@ function customerCafeMenu(cafe) {
   if (cafe.instagram) rows.push(["📸 Instagram"]);
   if (cafe.menu_url) rows.push(["🌐 Online Menu"]);
 
-  rows.push(["⬅️ Orqaga"]);
+  rows.push(["🏠 Bosh bo‘limga qaytish"]);
   return Markup.keyboard(rows).resize();
 }
 
@@ -842,7 +839,7 @@ function customerCafeFirstScreenMenu(cafe) {
 function cartMenu() {
   return Markup.keyboard([
     ["✅ Buyurtma berish", "❌ Tozalash"],
-    ["⬅️ Orqaga"],
+    ["⬅️ Orqaga", "🏠 Bosh bo‘limga qaytish"],
   ]).resize();
 }
 
@@ -850,7 +847,7 @@ function orderTypeMenu() {
   return Markup.keyboard([
     ["🚚 Yetkazib berish"],
     ["🏠 Olib ketish", "🍽 Shu yerda yeyish"],
-    ["⬅️ Orqaga"],
+    ["⬅️ Orqaga", "🏠 Bosh bo‘limga qaytish"],
   ]).resize();
 }
 
@@ -1166,11 +1163,69 @@ function formatCart(cart) {
 
   cart.forEach((p, i) => {
     total += Number(p.price || 0);
-    text += `${i + 1}. ${p.name} - ${p.price} so'm
-`;
+    text += `${i + 1}. ${p.name} - ${p.price} so'm\n`;
   });
 
   return { text, total };
+}
+
+function getCartItemKey(p) {
+  let hash = 0;
+  const str = p.name || "";
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return `${p.id}_${Math.abs(hash).toString(36)}_${p.price}`;
+}
+
+function generateCartView(u) {
+  const itemsMap = new Map();
+  let total = 0;
+  
+  u.cart.forEach(p => {
+    total += Number(p.price || 0);
+    const key = getCartItemKey(p);
+    if (itemsMap.has(key)) {
+      itemsMap.get(key).quantity += 1;
+    } else {
+      itemsMap.set(key, { ...p, quantity: 1, key });
+    }
+  });
+
+  const items = Array.from(itemsMap.values());
+  
+  if (items.length === 0) {
+    return { text: "🛒 Savatcha bo‘sh", markup: null, isEmpty: true };
+  }
+
+  let text = "🛒 Savatcha:\n\n";
+  const inlineRows = [];
+  
+  items.forEach((item, index) => {
+    const itemTotal = item.price * item.quantity;
+    text += `${index + 1}. ${item.name}\n`;
+    text += `${item.quantity} ta x ${item.price} so'm = ${itemTotal} so'm\n\n`;
+
+    inlineRows.push([
+      Markup.button.callback('➖', `c_dec_${item.key}`),
+      Markup.button.callback(`${item.quantity} ta`, 'cart_ignore'),
+      Markup.button.callback('➕', `c_inc_${item.key}`)
+    ]);
+    
+    inlineRows.push([
+      Markup.button.callback('🗑 O‘chirish', `c_rm_${item.key}`)
+    ]);
+  });
+
+  text += `💰 Jami: ${total} so'm`;
+
+  inlineRows.push([
+    Markup.button.callback('🗑 Savatchani tozalash', 'cart_clear')
+  ]);
+
+  return { text, markup: Markup.inlineKeyboard(inlineRows), isEmpty: false };
 }
 
 function isCafeOpenByTime(cafe) {
@@ -3075,6 +3130,104 @@ bot.action(/edit_prod_(\d+)/, async (ctx) => {
   });
 });
 
+bot.action('cart_ignore', async (ctx) => {
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action(/^c_inc_(.+)$/, async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const key = ctx.match[1];
+  const u = getUser(ctx.from.id);
+  
+  const item = u.cart.find(p => getCartItemKey(p) === key);
+  if (item) {
+    u.cart.push({ ...item });
+  }
+  
+  const view = generateCartView(u);
+  await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, view.text, { reply_markup: view.markup.reply_markup }).catch(() => {});
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action(/^c_dec_(.+)$/, async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const key = ctx.match[1];
+  const u = getUser(ctx.from.id);
+  
+  const index = u.cart.findIndex(p => getCartItemKey(p) === key);
+  if (index !== -1) {
+    u.cart.splice(index, 1);
+  }
+  
+  const view = generateCartView(u);
+  if (view.isEmpty) {
+    await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, view.text).catch(() => {});
+    await safeSendMessage(ctx.from.id, "🛒 Savatcha bo‘sh", Markup.keyboard([["🍴 Menuga qaytish", "🏠 Bosh menyu"]]).resize());
+  } else {
+    await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, view.text, { reply_markup: view.markup.reply_markup }).catch(() => {});
+  }
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action(/^c_rm_(.+)$/, async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const key = ctx.match[1];
+  const u = getUser(ctx.from.id);
+  
+  u.cart = u.cart.filter(p => getCartItemKey(p) !== key);
+  
+  const view = generateCartView(u);
+  if (view.isEmpty) {
+    await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, view.text).catch(() => {});
+    await safeSendMessage(ctx.from.id, "🛒 Savatcha bo‘sh", Markup.keyboard([["🍴 Menuga qaytish", "🏠 Bosh menyu"]]).resize());
+  } else {
+    await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, view.text, { reply_markup: view.markup.reply_markup }).catch(() => {});
+  }
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action('cart_clear', async (ctx) => {
+  if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
+  const u = getUser(ctx.from.id);
+  u.cart = [];
+  const view = generateCartView(u);
+  await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, view.text).catch(() => {});
+  await safeSendMessage(ctx.from.id, "🛒 Savatcha bo‘sh", Markup.keyboard([["🍴 Menuga qaytish", "🏠 Bosh menyu"]]).resize());
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action("confirm_switch_cafe", async (ctx) => {
+  const u = getUser(ctx.from.id);
+  if (!u.temp || !u.temp.pendingCafe) return safeAnswerCbQuery(ctx, "Xatolik yuz berdi");
+  const cafe = u.temp.pendingCafe;
+  
+  u.cart = [];
+  u.selectedCafeId = cafe.id;
+  u.selectedCafeName = cafe.name;
+  u.step = "inside_cafe";
+  u.temp.pendingCafe = null;
+  
+  await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, "🛒 Savatcha tozalandi.").catch(() => {});
+  
+  if (isCafeFrozen(cafe)) {
+    showFrozenMessage(ctx);
+  } else {
+    const openStatus = getCafeEffectiveOpenStatus(cafe);
+    if (!openStatus.isOpen) {
+      safeSendMessage(ctx.from.id, `Hozir cafe yopiq. Ish vaqti: ${openStatus.scheduleText}`, simpleBackMenu());
+    } else {
+      safeSendMessage(ctx.from.id, "Cafe menyusi:", customerCafeFirstScreenMenu(cafe));
+    }
+  }
+  await safeAnswerCbQuery(ctx);
+});
+
+bot.action("cancel_switch_cafe", async (ctx) => {
+  const u = getUser(ctx.from.id);
+  if (u.temp) u.temp.pendingCafe = null;
+  await safeEditMessageText(ctx.chat.id, ctx.callbackQuery.message.message_id, "Bekor qilindi. Savatchangiz saqlab qolindi.").catch(() => {});
+  await safeAnswerCbQuery(ctx);
+});
 bot.action(/admin_prod_page_(\d+)/, async (ctx) => {
   if (await isProcessing(ctx.from.id)) return safeAnswerCbQuery(ctx, 'Iltimos, kuting...');
   const page = Number(ctx.match[1]);
@@ -3420,7 +3573,7 @@ function generateSuperCourierPage(page = 0, callback) {
   });
 }
 
-bot.on("text", (ctx) => {
+bot.on("text", async (ctx) => {
   if (ctx.chat?.type !== "private") return;
   const text = ctx.message.text;
   const u = getUser(ctx.from.id);
@@ -3595,13 +3748,23 @@ bot.on("text", (ctx) => {
     return;
   }
 
-  if (text === "🏠 Bosh menyuga qaytish" || text === "🏠 Bosh bo‘limga qaytish") {
+  if (text === "🏠 Bosh menyuga qaytish" || text === "🏠 Bosh bo‘limga qaytish" || text === "🏠 Bosh menyu") {
     u.step = "home";
     u.temp = {};
     u.selectedCafeId = null;
     u.selectedCafeName = null;
     u.history = [];
     return safeReply(ctx, "Menu:", mainMenu(ctx));
+  }
+
+  if (text === "🍴 Menuga qaytish") {
+    if (!u.selectedCafeId) return ctx.reply("Bosh menyu:", mainMenu(ctx));
+    u.step = "home";
+    db.get('SELECT * FROM cafes WHERE id = ?', [u.selectedCafeId], (err, cafe) => {
+      if (!cafe) return ctx.reply("Cafe topilmadi", mainMenu(ctx));
+      return safeReply(ctx, "Cafe menyusi:", customerCafeFirstScreenMenu(cafe));
+    });
+    return;
   }
 
   const telegramId = String(ctx.from.id);
@@ -5584,8 +5747,15 @@ Parol: ${courierPassword}`;
     pushNavHistory(u);
 
     if (u.selectedCafeId && Number(u.selectedCafeId) !== Number(cafe.id) && u.cart && u.cart.length > 0) {
-      u.cart = [];
-      ctx.reply("🛒 Savatcha tozalandi (boshqa cafe tanlandi)");
+      if (!u.temp) u.temp = {};
+      u.temp.pendingCafe = cafe;
+      return ctx.reply(
+        "⚠️ Sizning savatchangizda boshqa kafening mahsulotlari mavjud. Savatcha tozalanadi.\nDavom etamizmi?",
+        Markup.inlineKeyboard([
+          [Markup.button.callback("✅ Ha, tozalash va davom etish", "confirm_switch_cafe")],
+          [Markup.button.callback("❌ Bekor qilish", "cancel_switch_cafe")]
+        ])
+      );
     }
 
     u.selectedCafeId = cafe.id;
@@ -5716,7 +5886,7 @@ Parol: ${courierPassword}`;
       u.step = "choose_category";
       const flatButtons = rows.map(r => r.category);
       const buttons = chunkButtons(flatButtons, 2);
-      buttons.push(["⬅️ Orqaga"]);
+      buttons.push(["⬅️ Orqaga", "🏠 Bosh bo‘limga qaytish"]);
       ctx.reply("Kategoriyani tanlang:", Markup.keyboard(buttons).resize());
     });
     return;
@@ -5735,7 +5905,7 @@ Parol: ${courierPassword}`;
       u.step = "choose_subcategory";
       const flatButtons = rows.map(r => r.subcategory);
       const buttons = chunkButtons(flatButtons, 2);
-      buttons.push(["⬅️ Orqaga"]);
+      buttons.push(["⬅️ Orqaga", "🏠 Bosh bo‘limga qaytish"]);
       ctx.reply("Bo‘limni tanlang:", Markup.keyboard(buttons).resize());
     });
     return;
@@ -5778,16 +5948,15 @@ Parol: ${courierPassword}`;
   // savatcha
   if (text === "🛒 Savatcha") {
     if (!u.isRegistered) return ctx.reply("Avval ro‘yxatdan o‘ting", mainMenu(ctx));
-    if (!u.cart.length) return ctx.reply("Savatcha bo‘sh.");
+    if (!u.cart.length) {
+      return ctx.reply("🛒 Savatcha bo‘sh", Markup.keyboard([["🍴 Menuga qaytish", "🏠 Bosh menyu"]]).resize());
+    }
 
-    const { text: cartText, total } = formatCart(u.cart);
-    return ctx.reply(
-      `🛒 Savatcha:
-
-${cartText}
-💰 Jami: ${total} so'm`,
-      cartMenu(),
-    );
+    const view = generateCartView(u);
+    // Send a header message to show the Reply Keyboard (✅ Buyurtma berish) at the bottom
+    await ctx.reply("Sizning savatchangiz:", cartMenu());
+    // Send the actual cart with inline buttons
+    return ctx.reply(view.text, view.markup);
   }
 
   // tozalash
